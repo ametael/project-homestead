@@ -1,0 +1,10 @@
+/PERSONA/
+/MEMORY/
+/PROJECTS/
+/ASSETS/
+/ARCHIVE/
+/.recycle/
+__pycache__/
+*.py[cod]
+.env
+.env.*

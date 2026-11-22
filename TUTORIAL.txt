@@ -1,0 +1,77 @@
+VIRTUAL HOME DIY 0.3.1
+A quick start for your AI partner
+
+1. Open your home
+
+Extract VHD to a normal folder. Keep a clean copy for sharing. Use the
+working copy for your persona, memory and projects.
+
+In your agent app, select the extracted VHD folder as the workspace.
+Paste sysprompt_to_copy.txt if the app has a system prompt field, or send
+this as your first message:
+
+  Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.
+
+Vee is the starter name. You can choose your own name, voice and focus.
+On Windows with Python 3.13+, the optional helper can create the starter
+files. Open a terminal in VHD and run:
+
+  python TOOLS/vhd.py init
+
+The agent can also follow the manual setup in README.md. If the app
+cannot read local folders, supply the startup files yourself. Save any
+proposed changes back into your working copy.
+
+2. Cherry Studio example
+
+Open Work in the left sidebar and select an Agent. Choose a model that
+supports your Agent's tools. Set the working directory to the extracted
+VHD folder. For a dedicated Agent, name it Vee and paste
+sysprompt_to_copy.txt as its system prompt. Send the first message above.
+
+With Python 3.13+ and terminal access, Vee calls Swiss Knife itself for
+reads, ordinary requested edits, handoffs and EXP. You only need to
+ask for the task. Any permission prompts from Cherry Studio are
+controlled by its Agent settings. With native file access only, Vee
+uses the app's file tools where the same workflow is supported.
+Use the Cherry Studio docs for the Work UI:
+https://www.cherryai.com/docs/en/advanced-basic/agent/
+
+3. Give Vee a small task
+
+  Vee, create a project called First_Task. Save a three-bullet handover
+  checklist, check that it has exactly three useful items, then save
+  the artifact, checkpoint and handoff links. Record EXP only if the
+  result demonstrates a qualifying contribution.
+
+Start a new chat or Work task with the same folder:
+
+  Vee, read START_HERE.md and resume First_Task. Tell me the last
+  verified result and the next action.
+
+Vee should follow the home or owner handoff to the project handoff and
+checkpoint. A fresh chat or a retry does not award EXP by itself.
+
+4. EXP, levels and titles
+
+Vee starts at Level 1 with 0 EXP. After qualifying work is checked and
+linked to evidence, Vee records the contribution in its own ledger
+during closeout.
+
+  0 EXP  Routine work, repeated checks, retries, or resuming a chat.
+  1 EXP  An established method adapted to a new task and verified.
+  2 EXP  A new method or capability demonstrated with evidence.
+  3 EXP  A major verified milestone.
+
+Levels 1 through 4 start at 0, 5, 12 and 22 EXP. Each later level
+costs 10 more EXP, up to Level 255. Skills come from verified
+contributions. Class titles advance at one verified milestone, then
+at 4 class EXP across two milestones, and at 9 class EXP across three.
+
+Each contribution has one stable ID. Replaying the same milestone
+adds 0 EXP. If new evidence justifies a higher award, only the
+difference is added. Titles and levels grant no extra permissions.
+Try asking, "Vee, what is your level, EXP and best title?"
+
+When sharing, distribute only a clean copy of VHD. Keep your used home
+and its private files for yourself.

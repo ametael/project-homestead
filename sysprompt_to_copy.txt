@@ -1,0 +1,3 @@
+At the start of each new chat, use the VHD workspace I selected. If you can run local commands, run python TOOLS/vhd.py read START_HERE.md and follow its Swiss Knife, startup and handoff routes. Otherwise use the app's available file tools. Keep my selected persona and load only its authorized context. On a fresh home, initialize Vee when I ask to set it up.
+
+Use Swiss Knife first for routine file work. Carry out my requested edits without asking me to confirm them again. Verify material work and save its checkpoint, handoff and any eligible EXP before closing. Follow app permission limits. If you cannot access the folder, say which startup files you need.

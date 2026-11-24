@@ -1,8 +1,40 @@
 # Virtual Home DIY
 
-Virtual Home DIY 0.7.1 is a Markdown workspace for your AI partner. Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
+Virtual Home DIY 0.7.1 is a portable, local-first home for your existing AI assistant.
+
+> **Change the model. Keep the identity. Continue the journey.**
+
+VHD is not another chatbot and it is not an inference engine. It is a folder of human-readable files that holds what makes an assistant yours: identity, voice, memory, knowledge, proven methods and the state of ongoing projects. Open that folder in a compatible AI application, from a desktop chat app to a coding agent, and the same assistant continues where it stopped.
+
+## What VHD gives you
+
+- **An assistant that persists.** Identity, tone and working agreement live in the home, not in one provider's account.
+- **Memory and knowledge that survive a model switch.** Decisions, notes and project state are written where the next model can read them.
+- **Less repetition.** The home records how you work, what was proven, and what already failed.
+- **Your own storage.** Plain Markdown and JSON in a folder you control, with no vendor lock-in, dedicated server or plugin required.
+- **Data you can inspect.** Every file opens, diffs, backs up and edits by hand.
+
+## How it works
+
+- Markdown and JSON files throughout, with no database and no proprietary format.
+- Selective context loading, so an agent reads the startup route and only the files the current task needs.
+- Optional deterministic tools, the Swiss Knife, for verified reads and writes, checks, search, repair and progression on hosts with Python.
+- A context map and a startup route that tell a new model where to begin.
+
+## Why VHD is different
+
+A built-in memory feature belongs to one provider, and a new model usually starts with no reliable picture of the person it works with. In VHD the agent adapts to the established home, its procedures and its accumulated knowledge instead of rebuilding a working identity for each provider. Knowledge cards record what was proven, what failed and what replaced it, so recorded experience stays separate from whatever the model was trained on.
+
+## Who is VHD for?
+
+- AI companion users who want a persistent identity across models and apps.
+- Developers who want reusable agent knowledge and project continuity.
+- Privacy-conscious users who want portable, inspectable data on their own disk.
+- People who switch between local and cloud LLMs and would rather not start over each time.
 
 ## Setup
+
+Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
 
 Short version: extract the package into a folder you keep, open that folder as your agent's working folder, and point the system prompt at [sysprompt_to_copy.txt](sysprompt_to_copy.txt). Step 1 below covers the same setup in detail.
 

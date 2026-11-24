@@ -1,5 +1,5 @@
 {
- "exported_at": "2026-11-24T16:38:05.504401+00:00",
+ "exported_at": "2026-11-24T16:46:25.799896+00:00",
  "extras": [
   {
    "path": "tests/test_vhd.py",
@@ -60,7 +60,7 @@
   "VERIFICATION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "2949836a8d1532404c98b087d5d9eb485e3d107e6ef3339b8963473f3e779e26",
+ "fingerprint": "cf08ebc18378af22b56ec0f59acd8578ac63e76f26a8b4b63077080dca947059",
  "schema": 1,
  "version": "0.7.1"
 }

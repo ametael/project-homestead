@@ -9,6 +9,7 @@ VHD is not another chatbot and it is not an inference engine. It is a folder of 
 ## What VHD gives you
 
 - **An assistant that persists.** Identity, tone and working agreement live in the home, not in one provider's account.
+- **A starter persona, not a fixed one.** VHD opens with Vee; rename her or reshape the voice and focus into the companion you want.
 - **Memory and knowledge that survive a model switch.** Decisions, notes and project state are written where the next model can read them.
 - **Less repetition.** The home records how you work, what was proven, and what already failed.
 - **Your own storage.** Plain Markdown and JSON in a folder you control, with no vendor lock-in, dedicated server or plugin required.
@@ -34,13 +35,21 @@ A built-in memory feature belongs to one provider, and a new model usually start
 
 ## Setup
 
-Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
+Three steps, about two minutes.
 
-Short version: extract the package into a folder you keep, open that folder as your agent's working folder, and point the system prompt at [sysprompt_to_copy.txt](sysprompt_to_copy.txt). Step 1 below covers the same setup in detail.
+1. **Extract the package** into a folder you keep, anywhere on your disk. Run it from that folder, not from inside the ZIP.
+2. **Open the folder as your agent's working folder** in an app with local file access, then paste [sysprompt_to_copy.txt](sysprompt_to_copy.txt) as the system prompt. The [quick tutorial](TUTORIAL.txt) walks through a Cherry Studio example.
+3. **Say what you want**: “Set up this home and start as Vee.” The agent creates the identity, memory, handoff and EXP files itself and introduces the persona. Then give it a task.
 
-1. On a fresh home, copy the [Vee identity template](TEMPLATES/IDENTITY.md) to `PERSONA/IDENTITY.md`, [owner handoff](TEMPLATES/OWNER_HANDOFF.md) to `PERSONA/HANDOFF.md`, [EXP ledger](TEMPLATES/EXP.md) to `PERSONA/PROGRESSION/EXP.md`, [memory index](TEMPLATES/MEMORY_INDEX.md) to `MEMORY/INDEX.md`, and [home handoff](TEMPLATES/HOME_HANDOFF.md) to `MEMORY/HANDOFF.md`. Create parent folders as needed. Copy only missing files. On a used home, recover missing identity and handoffs from a verified copy.
-2. Keep Vee or choose a name, voice and focus together. Leave personal history blank until you provide facts you want to save.
-3. Speak naturally and give the agent a task. It selects task-specific procedures from the [context map](CONTEXT_MAP.md).
+That is the whole installation. The package ships the Vee starter persona and an empty memory, so nothing arrives with someone else's history already inside.
+
+### Rename or reshape the assistant
+
+Vee is a default, not a requirement. Ask for another name, voice or focus and the agent rewrites the identity files. Keep the starter if it already fits. Personal history stays blank until you supply facts you want saved.
+
+### When the app cannot run commands
+
+Most apps need nothing else. A host without a terminal runs in standard mode, and an agent that can only read files will ask for the files it needs. The five it starts from are [IDENTITY](TEMPLATES/IDENTITY.md) to `PERSONA/IDENTITY.md`, [owner handoff](TEMPLATES/OWNER_HANDOFF.md) to `PERSONA/HANDOFF.md`, [EXP](TEMPLATES/EXP.md) to `PERSONA/PROGRESSION/EXP.md`, [memory index](TEMPLATES/MEMORY_INDEX.md) to `MEMORY/INDEX.md`, and [home handoff](TEMPLATES/HOME_HANDOFF.md) to `MEMORY/HANDOFF.md`. Copy only missing files, and create parent folders as needed. Manual copying is the fallback, not the normal path.
 
 With terminal access and Python 3.13+, Vee uses the [Swiss Knife](TOOLS/README.md#agent-workflow) for file work and progression. It also uses the CLI to initialize the home and write text files with verified snapshots on Windows and POSIX hosts. Windows behaviour is tested here; Linux and macOS are NOT RUN. Check version and package consistency with `python TOOLS/vhd.py release`. The [Markdown route](START_HERE.md) works with native file tools when these commands are unavailable.
 

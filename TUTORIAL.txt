@@ -1,4 +1,4 @@
-VIRTUAL HOME DIY 0.3.1
+VIRTUAL HOME DIY 0.4.1
 A quick start for your AI partner
 
 1. Open your home
@@ -75,3 +75,10 @@ Try asking, "Vee, what is your level, EXP and best title?"
 
 When sharing, distribute only a clean copy of VHD. Keep your used home
 and its private files for yourself.
+
+To bring a newer package into a home you already use, hand the zip to
+the agent and say "update this home". It reads UPDATE.md, compares the
+package with your home, and shows what would change before writing.
+Your identity, memory and projects are never touched. Run
+`python TOOLS/vhd.py links` and `python TOOLS/vhd.py routes` afterwards,
+and start a new command if the tool itself was replaced.

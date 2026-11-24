@@ -1,26 +1,42 @@
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import json
 import ntpath
 import os
 from pathlib import Path
+import platform
 import re
 import secrets
+import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 from urllib.parse import unquote
 import uuid
+import zipfile
 
-VERSION = "0.3.1"
+VERSION = "0.6.0"
 LIMIT_FILES = 10000
 LIMIT_BYTES = 512 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024
 PAGE_LIMIT = 4096
 DATA_ROOTS = {"PERSONA", "MEMORY", "PROJECTS", "ASSETS"}
 CORE_ROOTS = {"TOOLS", "OPERATIONS", "TEMPLATES", "KNOWLEDGE"}
-CORE_FILES = {"AGENTS.md", "START_HERE.md", "CONTEXT_MAP.md", "README.md", "LICENSE", ".gitignore"}
+CORE_FILES = {"AGENTS.md", "START_HERE.md", "CONTEXT_MAP.md", "README.md", "LICENSE", ".gitignore", "TUTORIAL.txt", "VERIFICATION.md", "CREDITS.md", "sysprompt_to_copy.txt"}
+MANIFEST_NAME = "MANIFEST.json"
+STATE_NAME = "HOME_STATE.json"
+ROUTES_NAME = "ROUTES.json"
+EXPORT_STATE = "SOURCE.json"
+STATE_SCHEMA = 1
+USER_ROOTS = {"PERSONA", "MEMORY", "PROJECTS", "ASSETS", "ARCHIVE"}
+SKIP_ROOTS = USER_ROOTS | {".recycle"}
+SKIP_PARTS = {".git", ".recycle", "__pycache__"}
+MANIFEST_KINDS = {"meta", "operations", "tool", "template", "knowledge", "state", "user"}
+ROUTE_LIMIT = 4096
 EVENT_HOOK = None
 
 
@@ -31,6 +47,10 @@ class SafetyError(Exception):
 def require(condition, message):
     if not condition:
         raise SafetyError(message)
+
+
+def require_mutation():
+    require(os.name in {"nt", "posix"}, "File mutation is not supported on this platform.")
 
 
 def event(name):
@@ -79,13 +99,37 @@ def check_chain(path):
             check_node(p)
 
 
-def no_replace(source, destination):
-    require(os.name == "nt", "File mutation is currently supported on Windows only.")
+def portable_move(source, destination):
+    if source.is_file():
+        try:
+            os.link(source, destination)
+        except FileExistsError:
+            raise SafetyError("Destination already exists; nothing overwritten.")
+        except OSError as error:
+            if error.errno == errno.EXDEV:
+                raise SafetyError("Cross-filesystem moves are refused.")
+            raise
+        source.unlink()
+        return
+    try:
+        os.mkdir(destination)
+    except FileExistsError:
+        raise SafetyError("Destination already exists; nothing overwritten.")
+    for child in sorted(source.iterdir(), key=lambda item: item.name):
+        portable_move(child, destination / child.name)
+    source.rmdir()
+
+
+def no_replace(source, destination, platform=None):
+    require_mutation()
     check_chain(source)
     check_chain(destination.parent)
     require(not os.path.lexists(destination), "Destination already exists; nothing overwritten.")
     require(source.stat().st_dev == destination.parent.stat().st_dev, "Cross-filesystem moves are refused.")
-    os.rename(source, destination)
+    if (platform or os.name) == "nt":
+        os.rename(source, destination)
+    else:
+        portable_move(source, destination)
 
 
 def write_json_new(path, value):
@@ -120,6 +164,176 @@ def hash_file(path):
     require(before.st_ctime_ns == latest.st_ctime_ns and opened.st_ctime_ns == after.st_ctime_ns,
             "File metadata changed while reading.")
     return h.hexdigest()
+
+
+def kind_of(relative):
+    first = relative.parts[0]
+    if first in USER_ROOTS:
+        return "user"
+    if first == "OPERATIONS":
+        return "operations"
+    if first == "TOOLS":
+        return "tool"
+    if first == "TEMPLATES":
+        return "template"
+    if first == "KNOWLEDGE":
+        return "knowledge"
+    if relative.as_posix() == STATE_NAME:
+        return "state"
+    return "meta"
+
+
+def package_manifest(root, version=None, state="package contents with hashes"):
+    root = Path(root)
+    require(root.is_dir(), "Package folder is not a directory.")
+    files = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        if relative.as_posix() in {MANIFEST_NAME, STATE_NAME, EXPORT_STATE} or relative.parts[0] in SKIP_ROOTS:
+            continue
+        if any(part in SKIP_PARTS for part in relative.parts):
+            continue
+        clean_relative(relative.as_posix())
+        files.append({"path": relative.as_posix(), "kind": kind_of(relative),
+                      "sha256": hash_file(path), "bytes": path.stat().st_size})
+    require(files, "Package has no files to record.")
+    require(len(files) <= LIMIT_FILES, "Too many package files.")
+    return {"version": version or VERSION, "state": state, "files": files, "moved": [], "migrations": []}
+
+
+def check_manifest(value):
+    require(isinstance(value, dict), "Manifest must be an object.")
+    require(re.fullmatch(r"\d+\.\d+\.\d+", str(value.get("version"))), "Manifest version is invalid.")
+    files = value.get("files")
+    require(isinstance(files, list) and files, "Manifest files are missing.")
+    require(len(files) <= LIMIT_FILES, "Manifest lists too many files.")
+    seen = set()
+    for entry in files:
+        require(isinstance(entry, dict), "Manifest entry must be an object.")
+        text = clean_relative(entry.get("path")).as_posix()
+        require(text not in seen, "Duplicate manifest path.")
+        seen.add(text)
+        require(entry.get("kind") in MANIFEST_KINDS, "Unknown manifest kind.")
+        require(re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256"))), "Invalid manifest hash.")
+        require(isinstance(entry.get("bytes"), int) and entry["bytes"] >= 0, "Invalid manifest size.")
+    require(isinstance(value.get("moved", []), list), "Manifest moves must be a list.")
+    require(isinstance(value.get("migrations", []), list), "Manifest migrations must be a list.")
+    return value
+
+
+def state_document(manifest, previous=None):
+    check_manifest(manifest)
+    known = previous.get("home_id") if isinstance(previous, dict) else None
+    home_id = known if isinstance(known, str) else str(uuid.uuid4())
+    require(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", home_id),
+            "Invalid home id.")
+    retained = previous.get("retained", []) if isinstance(previous, dict) else []
+    require(isinstance(retained, list), "Retained choices must be a list.")
+    return {"schema": STATE_SCHEMA, "home_id": home_id, "version": manifest["version"],
+            "installed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "manifest_sha256": digest(packed(manifest)), "manifest": manifest, "retained": retained}
+
+
+def read_state(home):
+    path = home.path(STATE_NAME)
+    if not path.exists():
+        return None
+    require(path.is_file(), "Home state is not a file.")
+    require(path.stat().st_size <= 4 * 1024 * 1024, "Home state is oversized.")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    require(isinstance(value, dict), "Home state must be an object.")
+    require(value.get("schema") == STATE_SCHEMA, "Unsupported home state schema.")
+    check_manifest(value.get("manifest"))
+    require(value.get("manifest_sha256") == digest(packed(value["manifest"])), "Home state manifest hash mismatch.")
+    require(value.get("version") == value["manifest"]["version"], "Home state version mismatch.")
+    require(isinstance(value.get("retained"), list), "Retained choices must be a list.")
+    return value
+
+
+def version_key(text):
+    require(re.fullmatch(r"\d+\.\d+\.\d+", str(text)), "Version must be three numbers.")
+    return tuple(int(part) for part in str(text).split("."))
+
+
+def home_markers(path):
+    path = Path(path)
+    score = 0
+    matched = []
+    for name, weight, label in (("HOME_STATE.json", 3, "state"), ("START_HERE.md", 2, "start"),
+                                ("PERSONA", 2, "persona"), ("TOOLS/vhd.py", 2, "tool"),
+                                ("OPERATIONS", 1, "operations"), ("TEMPLATES", 1, "templates")):
+        if (path / name).exists():
+            score += weight
+            matched.append(label)
+    if (path / MANIFEST_NAME).is_file() and not (path / STATE_NAME).is_file():
+        score -= 8
+        matched.append("package")
+    progress = path / "PROGRESS"
+    if progress.is_dir() and any(progress.glob("0001-*.md")):
+        score -= 3
+        matched.append("source")
+    if any((parent / "releases").is_dir() for parent in (path.parent, path.parent.parent)):
+        score -= 3
+        matched.append("release")
+    return score, matched
+
+
+def find_homes(base, depth=3):
+    require(isinstance(depth, int) and 1 <= depth <= 4, "Detection depth is one to four.")
+    start = Path(os.path.abspath(base))
+    require(start.is_dir(), "Detection base is not a folder.")
+    found = []
+    scanned = 0
+    stack = [(start, 0)]
+    while stack:
+        current, level = stack.pop()
+        scanned += 1
+        require(scanned <= 2000, "Detection scan is too large for this folder.")
+        score, matched = home_markers(current)
+        if score > 0:
+            found.append({"path": str(current), "score": score, "markers": matched})
+        if level < depth and score < 8:
+            try:
+                children = sorted(p for p in current.iterdir() if p.is_dir())
+            except OSError:
+                continue
+            for child in children:
+                if child.name in SKIP_PARTS:
+                    continue
+                try:
+                    check_node(child)
+                except (OSError, SafetyError):
+                    continue
+                stack.append((child, level + 1))
+    found.sort(key=lambda entry: (-entry["score"], entry["path"]))
+    return found
+
+
+def select_home(path):
+    selected = Path(os.path.abspath(path))
+    score, matched = home_markers(selected)
+    if score >= 8 and (selected / "START_HERE.md").is_file():
+        return {"path": str(selected.resolve()), "score": score, "markers": matched, "source": "direct"}
+    candidates = find_homes(selected, 3)
+    require(candidates, "No VHD home found near the given path.")
+    top = candidates[0]
+    tied = [entry for entry in candidates if entry["score"] == top["score"]]
+    require(len(tied) == 1, "Ambiguous VHD home: " + " | ".join(
+        f"{entry['path']} ({entry['score']}: {','.join(entry['markers'])})" for entry in tied[:2]))
+    return {**top, "source": "scan"}
+
+
+def manifest_command(root, write):
+    target = Path(os.path.abspath(root))
+    manifest = package_manifest(target)
+    fingerprint = digest(packed(manifest))
+    if write:
+        require_mutation()
+        record_state(target / MANIFEST_NAME, manifest)
+    return {"path": str(target / MANIFEST_NAME), "written": bool(write), "version": manifest["version"],
+            "files": len(manifest["files"]), "sha256": fingerprint}
 
 
 def inventory(path):
@@ -177,6 +391,106 @@ def copy_checked(source, destination, expected):
     require(inventory(source) == expected, "Source changed during capture.")
 
 
+def host_mark():
+    return "%s-%012x" % (platform.node() or "unknown", uuid.getnode())
+
+
+def process_birth(pid):
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(0x1000, False, number)
+        except (OSError, ValueError, AttributeError):
+            return None
+        if not handle:
+            return None
+        try:
+            created = ctypes.c_ulonglong(0)
+            exited = ctypes.c_ulonglong(0)
+            kernel = ctypes.c_ulonglong(0)
+            user = ctypes.c_ulonglong(0)
+            if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                            ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            return str(created.value)
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        raw = Path("/proc/%d/stat" % number).read_text(encoding="utf-8")
+        fields = raw[raw.rindex(")") + 2:].split()
+        return fields[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def lock_payload(token):
+    return {"schema": 1, "pid": os.getpid(), "host": host_mark(),
+            "birth": process_birth(os.getpid()), "token": token, "created": stamp()}
+
+
+def lock_path(home):
+    return home.path(".recycle/operation.lock")
+
+
+def lock_report(home):
+    report = {"path": ".recycle/operation.lock", "present": False, "state": "absent"}
+    lock = lock_path(home)
+    if not lock.is_file():
+        return report
+    report["present"] = True
+    require(lock.stat().st_size <= 4096, "Lock file is oversized; inspect it manually.")
+    raw = lock.read_bytes()
+    report["sha256"] = digest(raw)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        data = None
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        report.update({"state": "unknown", "reason": "legacy or unreadable lock format"})
+        return report
+    report["record"] = data
+    if data.get("host") != host_mark():
+        report.update({"state": "unknown", "reason": "the lock belongs to another host"})
+        return report
+    if not data.get("birth"):
+        report.update({"state": "unknown", "reason": "the lock has no process birth mark"})
+        return report
+    birth = process_birth(data.get("pid"))
+    if birth is None:
+        report.update({"state": "stale", "reason": "the owning process is gone"})
+    elif birth == data["birth"]:
+        report["state"] = "live"
+    else:
+        report.update({"state": "unknown", "reason": "the PID now belongs to a different process"})
+    return report
+
+
+def lock_recover(home):
+    report = lock_report(home)
+    require(report["state"] == "stale", "Recovery needs a confirmed stale lock; inspect the report first.")
+    lock = lock_path(home)
+    require(digest(lock.read_bytes()) == report["sha256"], "The lock changed after inspection; run lock again.")
+    folder = home.path(".recycle/locks")
+    folder.mkdir(exist_ok=True)
+    check_chain(folder)
+    identifier = uuid.uuid4().hex
+    destination = folder / (identifier + ".lock")
+    no_replace(lock, destination)
+    record = {"id": identifier, "quarantined": destination.relative_to(home.root).as_posix(),
+              "reason": report["reason"], "lock": report.get("record"), "at": stamp()}
+    write_json_new(folder / (identifier + ".json"), record)
+    return {"recovered": identifier, "quarantined": record["quarantined"], "reason": report["reason"]}
+
+
+def pending_upgrade_path(home):
+    return home.path(".recycle/pending-upgrade.json")
+
+
 class Home:
     def __init__(self, path):
         absolute = Path(os.path.abspath(path))
@@ -218,18 +532,31 @@ class Home:
 
     @contextmanager
     def lock(self):
-        require(os.name == "nt", "File mutation is currently supported on Windows only.")
+        require_mutation()
         base = self.store(".recycle")
         lock = base / "operation.lock"
+        if getattr(self, "lock_token", None):
+            self.lock_depth += 1
+            try:
+                yield
+            finally:
+                self.lock_depth -= 1
+            return
+        token = uuid.uuid4().hex
         try:
-            write_json_new(lock, {"pid": os.getpid(), "created": stamp()})
+            write_json_new(lock, lock_payload(token))
         except FileExistsError:
-            raise SafetyError("Another operation or stale lock exists. Inspect it; do not automatically remove it.")
+            raise SafetyError("Another operation or stale lock exists. Run lock to inspect it; automatic removal is refused.")
+        self.lock_token = token
+        self.lock_depth = 1
         try:
             yield
         finally:
-            check_node(lock)
-            lock.unlink()
+            self.lock_depth -= 1
+            if self.lock_depth == 0:
+                self.lock_token = None
+                check_node(lock)
+                lock.unlink()
 
     def setup(self):
         with self.lock():
@@ -253,7 +580,22 @@ class Home:
                     created.append(target)
                 else:
                     require(dst.is_file(), "An existing local identity/memory target is not a file.")
-            return {"created": created, "existing_files": "preserved"}
+            previous = read_state(self)
+            if previous is None:
+                source_path = self.path(MANIFEST_NAME)
+                if source_path.is_file():
+                    require(source_path.stat().st_size <= 4 * 1024 * 1024, "Package manifest is oversized.")
+                    manifest = check_manifest(json.loads(source_path.read_text(encoding="utf-8")))
+                    manifest_source = MANIFEST_NAME
+                else:
+                    manifest = package_manifest(self.root)
+                    manifest_source = "generated"
+                record_state(self.path(STATE_NAME), state_document(manifest))
+                created.append(STATE_NAME)
+                state = {"created": True, "version": manifest["version"], "manifest_source": manifest_source}
+            else:
+                state = {"created": False, "version": previous["version"]}
+            return {"created": created, "state": state, "existing_files": "preserved"}
 
     def transaction(self, identifier):
         require(bool(re.fullmatch(r"[0-9a-f]{32}", identifier)), "Invalid operation ID.")
@@ -482,7 +824,7 @@ def validate_text(home, raw, kind):
 
 
 def write_text_source(home, raw, expected_sha, data):
-    require(os.name == "nt", "File mutation is currently supported on Windows only.")
+    require_mutation()
     relative = clean_relative(raw)
     require(len(relative.parts) > 1 and relative.parts[0] in DATA_ROOTS,
             "Write only to an exact file under PERSONA, MEMORY, PROJECTS, or ASSETS.")
@@ -661,6 +1003,1092 @@ def rng(args, home):
     return {"source": "os-csprng", "mode": args.mode, "values": values}
 
 
+def heading_slug(text):
+    text = text.strip().lower()
+    text = re.sub(r"[^\w\s-]", "", text)
+    return re.sub(r"[\s_]+", "-", text).strip("-")
+
+
+def anchor_matches(path, anchor):
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") and heading_slug(line.lstrip("#").strip()) == anchor:
+            return True
+    return False
+
+
+def links_check(home):
+    scanned = 0
+    checked = 0
+    failed = 0
+    findings = []
+    for path in sorted(home.root.rglob("*.md")):
+        relative = path.relative_to(home.root)
+        if relative.parts[0] in {"ARCHIVE", ".recycle"} or any(part in SKIP_PARTS for part in relative.parts):
+            continue
+        if not path.is_file():
+            continue
+        require(path.stat().st_size <= TEXT_LIMIT, "Markdown file exceeds the scan limit.")
+        scanned += 1
+        text = path.read_text(encoding="utf-8")
+        for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text):
+            raw = target.strip().split(" ", 1)[0].strip("<>")
+            if not raw or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", raw) or raw.startswith("//"):
+                continue
+            checked += 1
+            require(checked <= 5000, "Too many references to check.")
+            anchor = None
+            if "#" in raw:
+                raw, anchor = raw.split("#", 1)
+            entry = {"file": relative.as_posix(), "target": target.strip()}
+            destination = path if not raw else (path.parent / unquote(raw.replace("\\", "/")))
+            destination = destination.resolve(strict=False)
+            if not destination.is_relative_to(home.root):
+                destination = (home.root / unquote(raw.replace("\\", "/"))).resolve(strict=False)
+            if not destination.is_relative_to(home.root):
+                entry["state"] = "outside"
+            elif not destination.exists():
+                entry["state"] = "missing"
+            elif anchor and destination.suffix.lower() == ".md" and not anchor_matches(destination, anchor):
+                entry["state"] = "anchor"
+            if "state" in entry:
+                failed += 1
+                require(len(findings) < 200, "Too many broken references; fix the first batch.")
+                findings.append(entry)
+    return {"files": scanned, "references": checked, "failed": failed, "findings": findings}
+
+
+def routes_check(home):
+    path = home.path(ROUTES_NAME)
+    require(path.is_file(), "Route manifest is missing.")
+    require(path.stat().st_size <= TEXT_LIMIT, "Route manifest is oversized.")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    require(isinstance(data, dict) and data.get("schema") == 1, "Unsupported route manifest.")
+    parts = data.get("parts")
+    require(isinstance(parts, list) and parts, "Route parts are missing.")
+    require(len(parts) <= 50, "Too many route parts.")
+    seen_ids = set()
+    seen_paths = set()
+    failed = 0
+    results = []
+    for part in parts:
+        require(isinstance(part, dict), "Route part must be an object.")
+        identifier = part.get("id")
+        require(isinstance(identifier, str) and bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", identifier)),
+                "Invalid route id.")
+        require(identifier not in seen_ids, "Duplicate route id.")
+        seen_ids.add(identifier)
+        text = clean_relative(part.get("path")).as_posix()
+        require(text not in seen_paths, "Duplicate route path.")
+        seen_paths.add(text)
+        limit = part.get("limit", ROUTE_LIMIT)
+        require(isinstance(limit, int) and 0 <= limit <= TEXT_LIMIT, "Invalid route size limit.")
+        file = home.path(text)
+        if not file.is_file():
+            if part.get("required", True):
+                failed += 1
+                results.append({"id": identifier, "path": text, "state": "missing"})
+            else:
+                results.append({"id": identifier, "path": text, "state": "absent-optional"})
+        elif limit and file.stat().st_size > limit:
+            failed += 1
+            results.append({"id": identifier, "path": text, "state": "oversized",
+                            "bytes": file.stat().st_size, "limit": limit})
+        else:
+            results.append({"id": identifier, "path": text, "state": "ok", "bytes": file.stat().st_size})
+    return {"parts": results, "failed": failed}
+
+
+def release_check(home, project=None, compare=None):
+    manifest_file = home.path(MANIFEST_NAME)
+    require(manifest_file.is_file(), "Package manifest is missing; run manifest --write.")
+    require(manifest_file.stat().st_size <= 4 * 1024 * 1024, "Package manifest is oversized.")
+    manifest = check_manifest(json.loads(manifest_file.read_text(encoding="utf-8")))
+    version = manifest["version"]
+    findings = []
+    count = 0
+
+    def record(name, ok, expected, found, where):
+        nonlocal count
+        count += 1
+        if not ok:
+            require(len(findings) < 50, "Too many release findings; fix the first batch.")
+            findings.append({"check": name, "path": where, "expected": expected, "found": found})
+
+    def top_lines(raw, lines):
+        file = home.path(raw)
+        require(file.is_file(), "Required package document is missing: " + raw)
+        require(file.stat().st_size <= TEXT_LIMIT, "Package document exceeds the scan limit: " + raw)
+        text = file.read_text(encoding="utf-8")
+        return text, "\n".join(text.splitlines()[:lines])
+
+    record("code-version", VERSION == version, version, VERSION, "TOOLS/vhd.py")
+    for raw, marker in (("README.md", "Virtual Home DIY {v}"), ("VERIFICATION.md", "{v}")):
+        text, top = top_lines(raw, 3)
+        record("document-version", marker.format(v=version) in top, marker.format(v=version),
+               text.splitlines()[0] if text else "", raw)
+    changelog, _ = top_lines("CHANGELOG.md", 80)
+    headings = re.findall(r"^##\s+(\d+\.\d+\.\d+)\s*$", changelog, flags=re.MULTILINE)
+    require(headings, "Changelog has no version heading.")
+    record("changelog-current", headings[0] == version, version, headings[0], "CHANGELOG.md")
+    persona = home.path("TEMPLATES/IDENTITY.md")
+    persona_text = ""
+    if persona.is_file():
+        require(persona.stat().st_size <= TEXT_LIMIT, "Default persona template is oversized.")
+        persona_text = persona.read_text(encoding="utf-8")
+    missing_markers = [marker for marker in PERSONA_MARKERS if marker not in persona_text]
+    record("default-persona", len(persona_text) >= 800 and not missing_markers,
+           "complete Vee template of at least 800 bytes with name, voice, role and continuity",
+           {"bytes": len(persona_text), "missing": missing_markers}, "TEMPLATES/IDENTITY.md")
+    shipped = {entry["path"]: entry["sha256"] for entry in package_manifest(home.root)["files"]}
+    declared = {entry["path"]: entry["sha256"] for entry in manifest["files"]}
+    missing = sorted(set(declared) - set(shipped))
+    extra = sorted(set(shipped) - set(declared))
+    changed = sorted(path for path in set(declared) & set(shipped) if declared[path] != shipped[path])
+    record("manifest-coverage", not (missing or extra or changed), "manifest matches the shipped files",
+           {"missing": missing[:5], "extra": extra[:5], "changed": changed[:5]}, MANIFEST_NAME)
+    result = {"version": version, "files": len(declared),
+              "manifest": {"missing": missing, "extra": extra, "changed": changed}}
+    if project:
+        root = Path(os.path.abspath(project))
+        require(root.is_dir(), "Project folder is not a directory.")
+        for name, marker in (("README.md", "Virtual Home DIY {v}"), ("HANDOFF.md", "VHD {v}")):
+            file = root / name
+            if not file.is_file():
+                record("project-document", False, marker.format(v=version), "missing", name)
+                continue
+            require(file.stat().st_size <= TEXT_LIMIT, "Project document exceeds the scan limit: " + name)
+            top = "\n".join(file.read_text(encoding="utf-8").splitlines()[:8])
+            record("project-document", marker.format(v=version) in top, marker.format(v=version), name, name)
+    if compare:
+        folder = Path(os.path.abspath(compare))
+        require(folder.is_dir(), "Comparison folder is not a directory.")
+        mismatch = []
+        for entry in manifest["files"]:
+            target = folder / entry["path"]
+            if not target.is_file():
+                mismatch.append({"path": entry["path"], "state": "missing"})
+            elif hash_file(target) != entry["sha256"]:
+                mismatch.append({"path": entry["path"], "state": "differs"})
+        record("release-compare", not mismatch, "release folder matches the manifest",
+               {"mismatch": len(mismatch)}, folder.as_posix())
+        result["compare"] = {"folder": folder.as_posix(), "mismatch": mismatch[:20]}
+    result.update({"checks": count, "failed": len(findings), "findings": findings})
+    return result
+
+
+PENDING_SURFACES = ()
+COMMANDS = ("apply", "audit", "detect", "doctor", "git", "init", "inspect", "links", "lock", "manifest",
+            "method", "now", "plan", "read", "records", "release", "rng", "routes", "runtime", "stats",
+            "status", "upgrade", "validate", "write", "xp-preview")
+CARD_STATUS = {"VERIFIED", "HYPOTHESIS", "FAILED", "STALE", "SUPERSEDED"}
+CARD_LABELS = ("Stable ID", "Title", "Status", "Steward", "Use when", "Procedure",
+               "Environment and prerequisites", "What was tried", "What was assumed", "What actually happened",
+               "Why it failed", "Replacement or open question", "Known limits and recheck triggers",
+               "Superseded by", "Evidence", "Recheck when")
+METHOD_REQUIRED = ("Stable ID", "Title", "Status", "Steward", "Use when", "Procedure",
+                   "Environment and prerequisites", "Evidence")
+FAILURE_REQUIRED = ("Stable ID", "Title", "Status", "Steward", "Use when", "What was tried",
+                    "What was assumed", "What actually happened", "Why it failed",
+                    "Replacement or open question", "Evidence", "Recheck when")
+PROGRESSION_RULES = "levelling-1"
+PERSONA_MARKERS = ("Name: Vee", "Voice:", "Role:", "Continuity")
+
+
+def card_fields(text):
+    fields = {}
+    for line in text.splitlines():
+        if ":" not in line or line.lstrip().startswith(("#", "|", "-")):
+            continue
+        label, value = line.split(":", 1)
+        label = label.strip()
+        for known in CARD_LABELS:
+            if label == known or (known == "Evidence" and label.startswith("Evidence")):
+                fields.setdefault(known, value.strip())
+                break
+    return fields
+
+
+def knowledge_cards(home, catalog=None):
+    raw = catalog or "MEMORY/KNOWLEDGE"
+    folder = home.path(raw)
+    if not catalog and not folder.is_dir():
+        raw = "KNOWLEDGE"
+        folder = home.path(raw)
+    require(folder.is_dir(), "Knowledge catalog folder is missing.")
+    files = [path for path in sorted(folder.glob("*.md")) if path.stem.upper() not in {"INDEX", "CLASSES"}]
+    require(len(files) <= 500, "Too many knowledge cards; keep the catalog focused.")
+    cards = []
+    for path in files:
+        require(path.stat().st_size <= 64 * 1024, "Knowledge card exceeds the size limit.")
+        cards.append((path, card_fields(path.read_text(encoding="utf-8"))))
+    return raw, cards
+
+
+def method_check(home, catalog=None):
+    label, cards = knowledge_cards(home, catalog)
+    findings = []
+    seen = {}
+    listing = []
+    for path, fields in cards:
+        relative = path.relative_to(home.root).as_posix()
+        identifier = fields.get("Stable ID", "")
+        status = fields.get("Status", "")
+        required = FAILURE_REQUIRED if identifier.startswith("fail.") else METHOD_REQUIRED
+        problems = []
+        if not identifier:
+            problems.append("missing-id")
+        elif identifier in seen:
+            problems.append("duplicate-id")
+        if status not in CARD_STATUS:
+            problems.append("invalid-status")
+        if identifier.startswith("fail.") and status != "FAILED":
+            problems.append("failure-status")
+        if not identifier.startswith("fail.") and status == "FAILED":
+            problems.append("failure-id")
+        if status == "SUPERSEDED" and not fields.get("Superseded by"):
+            problems.append("superseded-without-target")
+        for field in required:
+            if not fields.get(field):
+                problems.append("missing-" + field.lower().replace(" ", "-"))
+        if identifier.startswith("fail.") and not fields.get("Replacement or open question"):
+            problems.append("failure-without-replacement")
+        if identifier:
+            seen.setdefault(identifier, relative)
+        listing.append({"id": identifier or None, "status": status or None,
+                        "title": fields.get("Title") or None, "path": relative})
+        for problem in problems:
+            require(len(findings) < 200, "Too many card findings; fix the first batch.")
+            findings.append({"card": relative, "id": identifier or None, "problem": problem})
+    return {"catalog": label, "cards": listing, "failed": len(findings), "findings": findings}
+
+
+def method_show(home, identifier, catalog=None):
+    require(isinstance(identifier, str) and bool(identifier.strip()), "Provide a card ID.")
+    label, cards = knowledge_cards(home, catalog)
+    matches = [(path, fields) for path, fields in cards if fields.get("Stable ID") == identifier.strip()]
+    require(matches, "No card carries that ID.")
+    require(len(matches) == 1, "Duplicate card IDs; repair the catalog before reading one.")
+    path, fields = matches[0]
+    text = path.read_text(encoding="utf-8")
+    require(len(text) <= 8192, "Card is too large for one bounded read.")
+    return {"catalog": label, "id": identifier.strip(), "status": fields.get("Status"),
+            "title": fields.get("Title"), "path": path.relative_to(home.root).as_posix(), "text": text}
+
+
+def status_card(home, raw, write=False):
+    result = progression(home, raw)
+    parts = clean_relative(result["ledger"]).parts
+    card = {"schema": 1, "derived": True, "generated_by": "vhd.py status", "rules": PROGRESSION_RULES,
+            "ledger": result["ledger"], "xp": result["xp"], "level": result["level"],
+            "next_level_xp": result["next_level_xp"], "title": result["title"],
+            "titles": result["titles"], "skills": result["skills"],
+            "sources": {"ledger": result["sha256"], "catalog": result["catalog_sha256"],
+                        "rules": PROGRESSION_RULES}}
+    folder = home.path("/".join(parts[:-1]))
+    target = folder / "STATUS.json"
+    card["path"] = target.relative_to(home.root).as_posix()
+    fresh = None
+    if target.is_file():
+        require(target.stat().st_size <= 256 * 1024, "Derived status card is oversized.")
+        try:
+            stored = json.loads(target.read_text(encoding="utf-8"))
+        except ValueError:
+            stored = {}
+        if isinstance(stored, dict) and isinstance(stored.get("sources"), dict):
+            fresh = stored["sources"] == card["sources"]
+    payload = {"card": card, "fresh": fresh}
+    if write:
+        require(parts[0] in {"PERSONA", "MEMORY"}, "Derived status is written only inside a persona or memory area.")
+        data = (json.dumps(card, indent=1, sort_keys=True) + "\n").encode()
+        with home.lock():
+            install_bytes(target, data)
+        payload.update({"written": card["path"], "fresh": True})
+    return payload
+
+
+def read_config(home):
+    path = home.path("MEMORY/CONFIG.json")
+    if not path.is_file():
+        return {}
+    require(path.stat().st_size <= 16 * 1024, "User configuration is oversized.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {"unreadable": True}
+    require(isinstance(value, dict), "User configuration must be an object.")
+    return value
+
+
+def mode_report(home, mode=None):
+    config = read_config(home)
+    runtime = {"python_ok": sys.version_info >= (3, 13), "file_mutation": os.name in {"nt", "posix"}}
+    available = {"standard": True, "enhanced": bool(runtime["python_ok"] and runtime["file_mutation"]),
+                 "autonomous": bool(runtime["python_ok"] and runtime["file_mutation"])}
+    opt_in = config.get("autonomous_opt_in") is True
+    warnings = []
+    if config.get("unreadable"):
+        warnings.append("MEMORY/CONFIG.json is not valid JSON; defaults apply.")
+    requested = mode or config.get("mode") or "auto"
+    if requested not in {"auto", "standard", "enhanced", "autonomous"}:
+        warnings.append("Unknown mode in configuration; auto applies.")
+        requested = "auto"
+    if requested == "autonomous" and not opt_in:
+        warnings.append("Autonomous mode needs autonomous_opt_in in MEMORY/CONFIG.json.")
+        requested = "auto"
+    if requested in {"enhanced", "autonomous"} and not available[requested]:
+        warnings.append("Requested mode is unavailable on this host; the best available mode applies.")
+        requested = "auto"
+    selected = requested if requested in {"standard", "enhanced", "autonomous"} else (
+        "enhanced" if available["enhanced"] else "standard")
+    return {"available": available, "requested": mode or config.get("mode") or "auto",
+            "selected": selected, "opt_in": opt_in, "warnings": warnings}
+
+
+def doctor(home, mode=None):
+    runtime = {"os": sys.platform, "python": "%d.%d.%d" % sys.version_info[:3],
+               "python_minimum": "3.13", "python_ok": sys.version_info >= (3, 13),
+               "file_mutation": os.name in {"nt", "posix"}, "network": False, "third_party_packages": False}
+    state = None
+    state_info = {"present": home.path(STATE_NAME).is_file()}
+    if state_info["present"]:
+        try:
+            state = read_state(home)
+            state_info.update({"valid": True, "version": state["version"],
+                               "installed_at": state.get("installed_at")})
+        except (SafetyError, ValueError, OSError) as error:
+            state_info.update({"valid": False, "error": str(error)})
+    manifest_file = home.path(MANIFEST_NAME)
+    package = {"present": manifest_file.is_file()}
+    declared = {}
+    if package["present"]:
+        require(manifest_file.stat().st_size <= 4 * 1024 * 1024, "Package manifest is oversized.")
+        manifest = check_manifest(json.loads(manifest_file.read_text(encoding="utf-8")))
+        declared = {entry["path"]: entry for entry in manifest["files"]}
+        package.update({"version": manifest["version"], "files": len(declared)})
+    missing = []
+    size_changed = []
+    for text, entry in declared.items():
+        target = home.path(text)
+        if not target.is_file():
+            missing.append(text)
+        elif target.stat().st_size != entry["bytes"]:
+            size_changed.append(text)
+    package.update({"missing": missing[:10], "size_changed": size_changed[:10]})
+    state_version = state_info.get("version")
+    version_sync = None
+    if state_version is not None and package.get("version"):
+        version_sync = state_version == package["version"]
+    startup = routes_check(home)
+    startup_bytes = sum(part.get("bytes", 0) for part in startup["parts"] if part["state"] == "ok")
+    lock_info = lock_report(home)
+    limits = ["Manifest comparison uses recorded sizes; run release for byte hashes.",
+              "Mode availability follows detected capabilities, not model names."]
+    if not runtime["file_mutation"]:
+        limits.insert(0, "File mutation is unavailable on this platform; reads, checks and derivation still work.")
+    config = read_config(home)
+    compliance = config.get("license_compliance", True)
+    warnings = []
+    if not isinstance(compliance, bool):
+        warnings.append("license_compliance must be true or false; true applies.")
+        compliance = True
+    briefing = home.path("SYSTEM/POLICIES/EULA.md")
+    if not briefing.is_file():
+        warnings.append("License briefing is missing; treat third-party licenses as unverified.")
+    if not compliance:
+        warnings.append("License checks are disabled; this grants no additional rights.")
+    modes = mode_report(home, mode)
+    warnings = modes["warnings"] + warnings
+    return {"runtime": runtime, "commands": list(COMMANDS),
+            "home": {"root": home.root.as_posix(),
+                     "user_areas": sorted(name for name in USER_ROOTS if home.path(name).exists())},
+            "package": package, "state": state_info, "version_in_sync": version_sync,
+            "startup": {"parts": len(startup["parts"]), "failed": startup["failed"], "bytes": startup_bytes},
+            "lock": lock_info, "modes": modes,
+            "license": {"compliance": compliance, "briefing": "SYSTEM/POLICIES/EULA.md",
+                        "briefing_present": briefing.is_file()},
+            "warnings": warnings,
+            "pending": list(PENDING_SURFACES), "limits": limits}
+
+
+AUDIT_PATTERNS = (
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("credential", re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd)\s*[:=]\s*['\"]?[A-Za-z0-9/+=_-]{12,}")),
+)
+DRIVE_PATH = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/](?![\\/])")
+
+
+def absolute_path(line):
+    if DRIVE_PATH.search(line):
+        return True
+    for prefix in ("/" + "Users/", "/" + "home/"):
+        if prefix in line:
+            return True
+    return False
+
+
+def audit(home, path=None):
+    root = home.root if path is None else Path(os.path.abspath(path))
+    require(root.is_dir(), "Audit target is not a directory.")
+    if path is None:
+        files = [home.path(entry["path"]) for entry in package_manifest(home.root)["files"]]
+    else:
+        files = [item for item in sorted(root.rglob("*")) if item.is_file()]
+        require(len(files) <= LIMIT_FILES, "Audit target has too many files.")
+    findings = []
+    scanned = 0
+    warnings = []
+    markers = read_config(home).get("private_markers", [])
+    if not isinstance(markers, list) or len(markers) > 20 or any(
+            not isinstance(marker, str) or not 1 <= len(marker) <= 64 for marker in markers):
+        markers = []
+        warnings.append("private_markers must be a list of up to 20 short strings; none applied.")
+    text_suffixes = {".md", ".json", ".txt", ".py", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".html"}
+
+    def note(relative, kind, detail):
+        require(len(findings) < 100, "Too many audit findings; fix the first batch.")
+        findings.append({"path": relative, "kind": kind, "detail": detail})
+
+    for item in files:
+        relative = item.relative_to(root).as_posix() if path is not None else item.relative_to(home.root).as_posix()
+        parts = set(Path(relative).parts)
+        scanned += 1
+        if ".git" in parts:
+            continue
+        if parts & {"__pycache__", ".recycle", "ARCHIVE"}:
+            note(relative, "runtime-artifact", "path lives in a runtime or recovery area")
+            continue
+        if item.suffix.lower() in {".log", ".bak", ".tmp", ".pyc", ".pyo", ".sqlite", ".sqlite3", ".db"}:
+            note(relative, "runtime-artifact", "log, cache or database file")
+            continue
+        if item.name == ".env" or item.name.startswith(".env."):
+            note(relative, "credential", "environment file present")
+            continue
+        if item.suffix.lower() not in text_suffixes:
+            continue
+        require(item.stat().st_size <= TEXT_LIMIT, "Audit text file exceeds the scan limit: " + relative)
+        for number, line in enumerate(item.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            for marker in markers:
+                if marker in line:
+                    note(relative, "private-marker", "line %d names a configured marker" % number)
+            for kind, pattern in AUDIT_PATTERNS:
+                if pattern.search(line):
+                    note(relative, kind, "line %d matched a redacted %s" % (number, kind))
+            if absolute_path(line):
+                note(relative, "absolute-path", "line %d contains a local absolute path" % number)
+    return {"scope": root.as_posix(), "files": scanned, "failed": len(findings), "markers": len(markers),
+            "warnings": warnings, "redacted": True, "findings": findings}
+
+
+RUNTIME_KINDS = ("doctor", "links", "routes", "audit", "release", "inference")
+RUNTIME_DEFAULT = {"schema": 1, "max_tasks_per_run": 10, "max_attempts": 3, "backoff_seconds": 30,
+                   "requests_used": 0, "tasks_used": 0, "tokens": None, "measured_tokens": False}
+RUNTIME_STATE = {"schema": 1, "mode": "stopped", "last_beat": None, "runs": 0,
+                 "tasks_done": 0, "tasks_failed": 0}
+
+
+def runtime_fields(home):
+    return {"queue": home.path("MEMORY/RUNTIME/queue.json"),
+            "state": home.path("MEMORY/RUNTIME/state.json"),
+            "budget": home.path("MEMORY/RUNTIME/budget.json"),
+            "events": home.path("MEMORY/RUNTIME/events.log"),
+            "stop": home.path("MEMORY/RUNTIME/STOP")}
+
+
+def runtime_load(path, default):
+    if not path.is_file():
+        return json.loads(json.dumps(default))
+    require(path.stat().st_size <= 256 * 1024, "Runtime record is oversized.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return json.loads(json.dumps(default))
+    return value if isinstance(value, dict) else json.loads(json.dumps(default))
+
+
+def runtime_save(path, value):
+    install_bytes(path, (json.dumps(value, indent=1, sort_keys=True) + "\n").encode())
+
+
+def runtime_event(home, line):
+    path = runtime_fields(home)["events"]
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    lines.append(stamp() + " " + line)
+    install_bytes(path, ("\n".join(lines[-200:]) + "\n").encode())
+
+
+def runtime_status(home):
+    fields = runtime_fields(home)
+    queue = runtime_load(fields["queue"], {"schema": 1, "tasks": []})
+    state = runtime_load(fields["state"], RUNTIME_STATE)
+    budget = runtime_load(fields["budget"], RUNTIME_DEFAULT)
+    tasks = queue.get("tasks", [])
+    counts = {}
+    for task in tasks:
+        status = task.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    health = "ok"
+    if state.get("mode") == "running":
+        beat = state.get("last_beat")
+        health = "interrupted"
+        if isinstance(beat, str):
+            try:
+                health = "ok" if (datetime.now(timezone.utc) - datetime.fromisoformat(beat)).total_seconds() < 600 \
+                    else "interrupted"
+            except ValueError:
+                health = "interrupted"
+    elif state.get("mode") not in {"stopped", "paused"}:
+        health = "unknown"
+    lines = fields["events"].read_text(encoding="utf-8").splitlines() if fields["events"].is_file() else []
+    return {"mode": state.get("mode"), "health": health, "stop": fields["stop"].is_file(),
+            "tasks": len(tasks), "counts": counts,
+            "state": {key: state.get(key) for key in ("last_beat", "runs", "tasks_done", "tasks_failed")},
+            "budget": budget, "recent": lines[-5:],
+            "tokens": {"measured": False, "value": None, "note": "The deterministic runtime makes no model call."}}
+
+
+def runtime_execute(home, task):
+    kind = task.get("kind")
+    if kind == "inference":
+        raise SafetyError("No provider adapter is configured; no request was made.")
+    if kind == "doctor":
+        return {"kind": kind, "startup_failed": doctor(home)["startup"]["failed"]}
+    checks = {"links": links_check, "routes": routes_check, "audit": audit}
+    if kind in checks:
+        return {"kind": kind, "failed": checks[kind](home)["failed"]}
+    if kind == "release":
+        return {"kind": kind, "failed": release_check(home)["failed"]}
+    raise SafetyError("Unknown task kind: " + str(kind))
+
+
+def runtime_command(home, action, kind=None, payload=None, limit=None, now=False):
+    require(action in {"status", "add", "start", "pause", "resume", "stop", "run"}, "Unknown runtime action.")
+    if action == "status":
+        return runtime_status(home)
+    require_mutation()
+    if action in {"start", "run"}:
+        require(read_config(home).get("autonomous_opt_in") is True,
+                "Autonomous mode needs autonomous_opt_in in MEMORY/CONFIG.json.")
+    require(kind in RUNTIME_KINDS if action == "add" else True, "Unknown task kind.")
+    with home.lock():
+        fields = runtime_fields(home)
+        fields["queue"].parent.mkdir(parents=True, exist_ok=True)
+        check_chain(fields["queue"].parent)
+        queue = runtime_load(fields["queue"], {"schema": 1, "tasks": []})
+        state = runtime_load(fields["state"], RUNTIME_STATE)
+        budget = runtime_load(fields["budget"], RUNTIME_DEFAULT)
+        tasks = queue.setdefault("tasks", [])
+        if action == "add":
+            text = (payload or "").strip()
+            require(len(text) <= 512, "Task payload must be at most 512 characters.")
+            identifier = "task." + digest((kind + "|" + text).encode())[:16]
+            for task in tasks:
+                if task.get("id") == identifier:
+                    return {"added": False, "id": identifier, "status": task.get("status")}
+            tasks.append({"id": identifier, "kind": kind, "payload": text, "status": "pending",
+                          "attempts": 0, "created": stamp(), "last_error": None,
+                          "not_before": None, "result": None})
+            runtime_save(fields["queue"], queue)
+            runtime_event(home, "add " + identifier + " " + kind)
+            return {"added": True, "id": identifier, "status": "pending"}
+        if action in {"start", "pause", "resume", "stop"}:
+            if action == "start":
+                if fields["stop"].is_file():
+                    fields["stop"].unlink()
+                state["mode"] = "running"
+                state["last_beat"] = stamp()
+            elif action == "pause":
+                state["mode"] = "paused"
+            elif action == "resume":
+                state["mode"] = "running"
+                state["last_beat"] = stamp()
+            else:
+                state["mode"] = "stopped"
+                if now:
+                    install_bytes(fields["stop"], (json.dumps({"reason": "emergency stop",
+                                                               "at": stamp()}) + "\n").encode())
+            runtime_save(fields["state"], state)
+            runtime_event(home, action + (" emergency" if now else ""))
+            return {"mode": state["mode"], "stop": fields["stop"].is_file()}
+        require(state.get("mode") == "running", "Start the runtime before running tasks.")
+        require(not fields["stop"].is_file(), "The emergency stop flag is set; clear it with runtime start.")
+        cap = budget.get("max_tasks_per_run", 10)
+        require(isinstance(cap, int) and 1 <= cap <= 100, "Runtime budget is invalid.")
+        if limit is not None:
+            require(1 <= limit <= cap, "The run limit must be within the configured budget.")
+        allowed = min(limit or cap, cap)
+        ran = []
+        for task in tasks:
+            if len(ran) >= allowed:
+                break
+            if task.get("status") not in {"pending", "retry"}:
+                continue
+            due = task.get("not_before")
+            if isinstance(due, str):
+                try:
+                    if datetime.fromisoformat(due) > datetime.now(timezone.utc):
+                        continue
+                except ValueError:
+                    pass
+            if task.get("kind") == "inference":
+                task["status"] = "blocked"
+                task["last_error"] = "No provider adapter is configured; no request was made."
+                ran.append({"id": task["id"], "status": "blocked"})
+                runtime_save(fields["queue"], queue)
+                continue
+            task["attempts"] = int(task.get("attempts", 0)) + 1
+            try:
+                task["result"] = runtime_execute(home, task)
+                task["status"] = "done"
+                task["last_error"] = None
+                state["tasks_done"] = int(state.get("tasks_done", 0)) + 1
+            except (SafetyError, OSError, ValueError) as error:
+                task["last_error"] = str(error)
+                if task["attempts"] >= budget.get("max_attempts", 3):
+                    task["status"] = "failed"
+                    state["tasks_failed"] = int(state.get("tasks_failed", 0)) + 1
+                else:
+                    task["status"] = "retry"
+                    task["not_before"] = (datetime.now(timezone.utc) + timedelta(
+                        seconds=budget.get("backoff_seconds", 30) * task["attempts"])).isoformat()
+            state["last_beat"] = stamp()
+            runtime_save(fields["queue"], queue)
+            runtime_save(fields["state"], state)
+            ran.append({"id": task["id"], "status": task["status"]})
+        budget["tasks_used"] = int(budget.get("tasks_used", 0)) + len(ran)
+        state["runs"] = int(state.get("runs", 0)) + 1
+        state["last_beat"] = stamp()
+        runtime_save(fields["budget"], budget)
+        runtime_save(fields["state"], state)
+        runtime_event(home, "run %d task(s)" % len(ran))
+        return {"ran": ran, "budget": {key: budget[key] for key in ("max_tasks_per_run", "tasks_used")}}
+
+
+def git_command(cwd, *args, check=True):
+    require(shutil.which("git"), "Git is not available; Smart Git stays optional.")
+    completed = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=120)
+    if check and completed.returncode != 0:
+        raise SafetyError("Git refused %s: %s" % (" ".join(args[:2]), completed.stderr.strip()[:300]))
+    return completed
+
+
+def repo_root(path):
+    if not shutil.which("git"):
+        return None
+    completed = git_command(path, "rev-parse", "--show-toplevel", check=False)
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return None
+    return Path(completed.stdout.strip()).resolve()
+
+
+def git_identity(repo):
+    if git_command(repo, "config", "user.email", check=False).stdout.strip():
+        return []
+    return ["-c", "user.name=VHD", "-c", "user.email=vhd@localhost"]
+
+
+def export_files(home):
+    manifest = check_manifest(json.loads(home.path(MANIFEST_NAME).read_text(encoding="utf-8")))
+    return manifest, sorted({entry["path"] for entry in manifest["files"]} | {MANIFEST_NAME})
+
+
+def export_fingerprint(target, files):
+    entries = []
+    for text in files:
+        path = target / text
+        require(path.is_file(), "Export is missing " + text)
+        entries.append({"path": text, "sha256": hash_file(path)})
+    return digest(packed({"files": entries}))
+
+
+def git_status(home, public=None):
+    local = repo_root(home.root)
+    report = {"git": bool(shutil.which("git")), "local": local.as_posix() if local else None}
+    if local:
+        changes = git_command(local, "status", "--porcelain", check=False).stdout.splitlines()
+        report.update({"branch": git_command(local, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip(),
+                       "changed": len(changes), "changed_paths": [line[3:] for line in changes[:20]],
+                       "remotes": len(git_command(local, "remote", check=False).stdout.split())})
+    if public:
+        target = Path(os.path.abspath(public))
+        public_root = repo_root(target) if target.is_dir() else None
+        report["public"] = {"path": target.as_posix(),
+                            "repository": public_root.as_posix() if public_root else None,
+                            "independent": bool(public_root and local and public_root != local)}
+    return report
+
+
+def git_export(home, destination):
+    target = Path(os.path.abspath(destination))
+    local = repo_root(home.root)
+    require(not target.is_relative_to(home.root), "The export must live outside the home.")
+    require(local is None or (target != local and not target.is_relative_to(local)),
+            "The export must not be the local repository.")
+    manifest, files = export_files(home)
+    release = release_check(home)
+    require(not release["failed"], "The package has release findings; fix them before exporting:"
+            " " + ", ".join(entry["check"] for entry in release["findings"][:5]))
+    if target.exists():
+        require(target.is_dir(), "Export destination is not a folder.")
+        existing = [item for item in target.iterdir() if item.name != ".git"]
+        require(not existing or (target / EXPORT_STATE).is_file(),
+                "Refusing to overwrite a folder this tool did not export.")
+    target.mkdir(parents=True, exist_ok=True)
+    keep = set(files) | {EXPORT_STATE}
+    for item in sorted(target.rglob("*"), reverse=True):
+        relative = item.relative_to(target)
+        if relative.parts[0] == ".git" or relative.as_posix() in keep:
+            continue
+        if item.is_file() or item.is_symlink():
+            item.unlink()
+    for directory in sorted((item for item in target.rglob("*") if item.is_dir()), reverse=True):
+        if directory.relative_to(target).parts[0] == ".git":
+            continue
+        if not any(directory.iterdir()):
+            directory.rmdir()
+    for text in files:
+        source = home.path(text)
+        require(source.is_file(), "Package file is missing: " + text)
+        destination_path = target / text
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        install_bytes(destination_path, source.read_bytes())
+    fingerprint = export_fingerprint(target, files)
+    record = {"schema": 1, "version": manifest["version"], "fingerprint": fingerprint,
+              "files": files, "exported_at": stamp()}
+    install_bytes(target / EXPORT_STATE, (json.dumps(record, indent=1, sort_keys=True) + "\n").encode())
+    return {"destination": target.as_posix(), "version": manifest["version"], "files": len(files),
+            "fingerprint": fingerprint, "record": EXPORT_STATE}
+
+
+def git_verify(home, destination):
+    target = Path(os.path.abspath(destination))
+    require(target.is_dir() and (target / EXPORT_STATE).is_file(), "No export record; export first.")
+    local = repo_root(home.root)
+    require(not target.is_relative_to(home.root), "The export must live outside the home.")
+    require(local is None or not target.is_relative_to(local), "The export must not be the local repository.")
+    require((target / EXPORT_STATE).stat().st_size <= 1024 * 1024, "Export record is oversized.")
+    record = json.loads((target / EXPORT_STATE).read_text(encoding="utf-8"))
+    require(isinstance(record, dict) and record.get("schema") == 1, "Unsupported export record.")
+    _, files = export_files(home)
+    findings = []
+    for text in files:
+        path = target / text
+        source = home.path(text)
+        if not path.is_file():
+            findings.append({"path": text, "problem": "missing"})
+        elif not source.is_file() or hash_file(path) != hash_file(source):
+            findings.append({"path": text, "problem": "differs"})
+    allowed = set(files) | {EXPORT_STATE}
+    for item in sorted(target.rglob("*")):
+        relative = item.relative_to(target).as_posix()
+        if relative.split("/")[0] == ".git" or relative in allowed:
+            continue
+        if item.is_file():
+            findings.append({"path": relative, "problem": "extra"})
+    present = [text for text in files if (target / text).is_file()]
+    fingerprint = export_fingerprint(target, present) if len(present) == len(files) else None
+    release = release_check(Home(target))
+    findings.extend({"path": entry["path"], "problem": "release-" + entry["check"]} for entry in release["findings"])
+    findings.extend({"path": entry["path"], "problem": "audit-" + entry["kind"]}
+                    for entry in audit(home, target)["findings"])
+    passed = bool(fingerprint) and not findings and fingerprint == record.get("fingerprint")
+    return {"passed": passed, "fingerprint": fingerprint, "recorded": record.get("fingerprint"),
+            "files": len(files), "findings": findings[:50]}
+
+
+def git_checkpoint(home, paths, message, include_ignored=False):
+    require_mutation()
+    local = repo_root(home.root)
+    require(local is not None, "The home is not inside a Git repository.")
+    require(paths, "Provide at least one exact path to checkpoint.")
+    require(isinstance(message, str) and 1 <= len(message.strip()) <= 200, "Provide a one-line commit message.")
+    cleaned = []
+    for raw in paths:
+        target = home.path(raw, exists=True)
+        require(target.is_relative_to(local), "Checkpoint paths must stay inside the local repository.")
+        cleaned.append(target.relative_to(local).as_posix())
+    options = ["-f"] if include_ignored else []
+    git_command(local, "add", *options, "--", *cleaned)
+    if not git_command(local, "status", "--porcelain", check=False).stdout.strip():
+        return {"committed": None, "message": "Nothing staged."}
+    git_command(local, *git_identity(local), "commit", "-m", message.strip())
+    return {"committed": git_command(local, "rev-parse", "HEAD").stdout.strip()[:12], "files": cleaned}
+
+
+def git_publish(home, destination, confirm, message=None):
+    require_mutation()
+    target = Path(os.path.abspath(destination))
+    local = repo_root(home.root)
+    require(local is not None, "The home is not inside a Git repository.")
+    require(target != local and not target.is_relative_to(local),
+            "The public export must be a separate repository.")
+    verify = git_verify(home, target)
+    require(verify["passed"], "Export verification failed; publication is blocked.")
+    require(confirm == verify["fingerprint"], "Confirm with the verified export fingerprint.")
+    existing = repo_root(target)
+    if existing is not None:
+        require(existing == target, "The export folder belongs to another repository.")
+    for name in git_command(local, "remote", check=False).stdout.split():
+        url = git_command(local, "remote", "get-url", name, check=False).stdout.strip()
+        if url:
+            require(Path(url).resolve() != target, "The local repository has a remote pointing at the export.")
+    if existing is None:
+        git_command(target, "init")
+    identity = git_identity(target)
+    _, files = export_files(home)
+    git_command(target, *identity, "add", "--", *files, EXPORT_STATE)
+    if not git_command(target, "status", "--porcelain", check=False).stdout.strip():
+        return {"committed": None, "message": "Nothing new to publish.", "pushed": False}
+    text = (message or "vhd export " + stamp()).strip()
+    require(1 <= len(text) <= 200, "Provide a one-line commit message.")
+    git_command(target, *identity, "commit", "-m", text)
+    return {"committed": git_command(target, "rev-parse", "HEAD").stdout.strip()[:12],
+            "branch": git_command(target, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip(),
+            "pushed": False, "remotes": len(git_command(target, "remote", check=False).stdout.split())}
+
+
+def install_bytes(path, data):
+    check_chain(path.parent)
+    tmp = path.parent / ("install-" + uuid.uuid4().hex + ".tmp")
+    with tmp.open("xb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    require(hash_file(tmp) == digest(data), "Staged file changed before install.")
+    if path.exists():
+        check_node(path)
+        os.replace(tmp, path)
+    else:
+        no_replace(tmp, path)
+    require(path.is_file() and hash_file(path) == digest(data), "Installed file does not match its bytes.")
+
+
+def home_hash_index(home):
+    index = {}
+    count = 0
+    for path in sorted(home.root.rglob("*")):
+        relative = path.relative_to(home.root)
+        if relative.parts[0] in SKIP_ROOTS or any(part in SKIP_PARTS for part in relative.parts):
+            continue
+        if not path.is_file():
+            continue
+        count += 1
+        require(count <= LIMIT_FILES, "Home has too many files to compare.")
+        try:
+            index.setdefault(hash_file(path), []).append(relative.as_posix())
+        except (OSError, SafetyError):
+            continue
+    return index
+
+
+def read_checksum(path):
+    file = Path(os.path.abspath(path))
+    require(file.is_file() and file.stat().st_size <= 4096, "Checksum file is missing or oversized.")
+    parts = file.read_text(encoding="utf-8").strip().split()
+    require(parts and re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]), "Checksum file has no SHA-256 digest.")
+    return parts[0].lower()
+
+
+def inspect_archive(archive):
+    path = Path(os.path.abspath(archive))
+    require(path.is_file(), "Archive is not a file.")
+    require(zipfile.is_zipfile(path), "File is not a valid ZIP archive.")
+    entries = []
+    total = 0
+    seen = set()
+    with zipfile.ZipFile(path) as bundle:
+        infos = bundle.infolist()
+        require(len(infos) <= LIMIT_FILES, "Archive lists too many entries.")
+        for info in infos:
+            if info.is_dir():
+                continue
+            text = clean_relative(info.filename).as_posix()
+            require(text.casefold() not in seen, "Archive contains a duplicate or case-colliding path: " + text)
+            seen.add(text.casefold())
+            require(not info.flag_bits & 0x1, "Encrypted archive entries are refused: " + text)
+            require((info.external_attr >> 16) & 0o170000 in {0, 0o100000},
+                    "Archive contains a link or special entry: " + text)
+            require(info.file_size <= 64 * 1024 * 1024, "Archive entry is too large: " + text)
+            if info.file_size:
+                require(info.file_size / max(info.compress_size, 1) <= 200,
+                        "Archive entry expands too far to trust: " + text)
+            total += info.file_size
+            require(total <= LIMIT_BYTES, "Archive expands beyond the supported size.")
+            entries.append((text, info.file_size))
+    require(entries, "Archive has no files to install.")
+    return entries, total
+
+
+def extract_archive(archive, entries, destination):
+    destination.mkdir()
+    with zipfile.ZipFile(archive) as bundle:
+        for text, size in entries:
+            target = destination / text
+            target.parent.mkdir(parents=True, exist_ok=True)
+            check_chain(target.parent)
+            written = 0
+            with bundle.open(text) as source, target.open("xb") as output:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    require(written <= size, "Archive entry is larger than declared: " + text)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            require(written == size, "Extracted size mismatch: " + text)
+
+
+def upgrade(home, package=None, write=False, confirm=None, archive=None, checksum=None):
+    stage = None
+    archive_info = None
+    try:
+        if archive:
+            archive_path = Path(os.path.abspath(archive))
+            entries, total = inspect_archive(archive_path)
+            archive_info = {"path": archive_path.as_posix(), "entries": len(entries), "bytes": total,
+                            "authenticity": "a checksum alone does not establish a publisher"}
+            if checksum:
+                require(hash_file(archive_path) == read_checksum(checksum),
+                        "Archive checksum does not match the detached digest.")
+                archive_info["integrity"] = "verified against the supplied digest"
+            else:
+                archive_info["integrity"] = "unverified; no detached digest supplied"
+            stage = Path(tempfile.mkdtemp(prefix="vhd-stage-", dir=archive_path.parent))
+            require(not stage.is_relative_to(home.root), "Staging must stay outside the home.")
+            extract_archive(archive_path, entries, stage / "package")
+            package = stage / "package"
+        require(package is not None, "Provide a package folder or a release archive.")
+        result = upgrade_package(home, package, write, confirm)
+        if archive_info:
+            result["archive"] = archive_info
+        return result
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def upgrade_package(home, package, write=False, confirm=None):
+    pkg = Path(os.path.abspath(package))
+    require(pkg.is_dir(), "Package folder is not a directory.")
+    manifest_file = pkg / MANIFEST_NAME
+    if manifest_file.is_file():
+        require(manifest_file.stat().st_size <= 4 * 1024 * 1024, "Package manifest is oversized.")
+        manifest = check_manifest(json.loads(manifest_file.read_text(encoding="utf-8")))
+        manifest_source = MANIFEST_NAME
+    else:
+        manifest = package_manifest(pkg)
+        manifest_source = "generated"
+    state = read_state(home)
+    base = {entry["path"]: entry["sha256"] for entry in state["manifest"]["files"]} if state else {}
+    index = home_hash_index(home) if state else {}
+    entries = []
+    new_paths = set()
+    for item in manifest["files"]:
+        relative = clean_relative(item["path"])
+        text = relative.as_posix()
+        new_paths.add(text)
+        if relative.parts[0] in USER_ROOTS or text == STATE_NAME:
+            entries.append({"path": text, "class": "refused", "reason": "user zone is never written"})
+            continue
+        target = home.path(text)
+        current = hash_file(target) if target.is_file() else None
+        expected = base.get(text)
+        relocated = None
+        if current is None and expected is not None:
+            others = [item for item in index.get(expected, []) if item != text]
+            if len(others) == 1:
+                relocated = others[0]
+        if current is None:
+            if relocated:
+                klass = "relocated"
+            else:
+                klass = "new" if expected is None else "deleted-locally"
+        elif expected is None:
+            klass = "conflict"
+        elif current == expected:
+            klass = "stale" if item["sha256"] != expected else "unchanged"
+        elif item["sha256"] == current:
+            klass = "applied"
+        else:
+            klass = "local" if item["sha256"] == expected else "conflict"
+        entry = {"path": text, "class": klass, "package_sha256": item["sha256"],
+                 "base_sha256": expected, "current_sha256": current}
+        if relocated:
+            entry["relocated_to"] = relocated
+            entry["suggestion"] = "identical content sits at another path; confirm whether to restore the manifest path"
+        elif klass == "conflict":
+            entry["suggestion"] = "compare both versions, then keep yours, take the package, or keep both"
+        elif klass == "deleted-locally":
+            entry["suggestion"] = "you removed this file; add it back only if you want it"
+        entries.append(entry)
+    for text in sorted(set(base) - new_paths):
+        entries.append({"path": text, "class": "dropped", "base_sha256": base[text],
+                        "suggestion": "kept in place; recycle it yourself if it is no longer wanted"})
+    counts = {}
+    for entry in entries:
+        counts[entry["class"]] = counts.get(entry["class"], 0) + 1
+    home_version = state["version"] if state else None
+    if home_version:
+        require(version_key(home_version) <= version_key(manifest["version"]),
+                "Package is older than this home.")
+    fingerprint = digest(packed({"version": manifest["version"], "entries": entries}))
+    pending = [entry for entry in entries if entry["class"] in {"conflict", "relocated", "refused"}]
+    pending_file = pending_upgrade_path(home)
+    interrupted = None
+    if pending_file.is_file():
+        try:
+            interrupted = json.loads(pending_file.read_text(encoding="utf-8"))
+        except ValueError:
+            interrupted = {"unreadable": True}
+    result = {"home_version": home_version, "package_version": manifest["version"],
+              "manifest_source": manifest_source, "mode": "normal" if state else "degraded",
+              "fingerprint": fingerprint, "counts": counts, "pending": len(pending),
+              "migrations": manifest.get("migrations", []),
+              "entries": entries, "written": []}
+    if interrupted is not None:
+        result["interrupted"] = interrupted
+    if not write:
+        result["notice"] = "Preview only. Nothing written."
+        return result
+    require(confirm == fingerprint, "Show the dry plan to the user and pass its fingerprint with --confirm.")
+    require_mutation()
+    require(not manifest.get("migrations"),
+            "This package lists migrations; apply them explicitly before this update.")
+    writable = [entry for entry in entries if entry["class"] in {"new", "stale"}]
+    applied = [entry["path"] for entry in entries if entry["class"] == "applied"]
+    if not writable and not applied:
+        result["notice"] = "Already current; nothing safe to write."
+        return result
+    snapshots = []
+    with home.lock():
+        record_state(pending_file, {"schema": 1, "started": stamp(), "fingerprint": fingerprint,
+                                    "version": manifest["version"], "from": home_version,
+                                    "planned": [entry["path"] for entry in writable],
+                                    "skipped": applied, "previous": interrupted})
+        for entry in writable:
+            if entry["class"] == "stale":
+                plan_id = home.plan("snapshot", target=entry["path"], allow_core=True,
+                                    reason="pre-update " + manifest["version"])["plan_id"]
+                home.apply(plan_id)
+                snapshots.append(plan_id)
+        for entry in writable:
+            data = (pkg / entry["path"]).read_bytes()
+            require(digest(data) == entry["package_sha256"], "Package file changed after the plan.")
+            install_bytes(home.path(entry["path"]), data)
+            result["written"].append(entry["path"])
+        record_state(home.path(STATE_NAME), state_document(manifest, previous=state))
+        pending_file.unlink()
+    result["state_written"] = True
+    result["snapshots"] = snapshots
+    result["skipped"] = applied
+    result["restart_required"] = "TOOLS/vhd.py" in result["written"]
+    result["host_prompt_stale"] = "sysprompt_to_copy.txt" in result["written"]
+    if counts.get("dropped"):
+        result["notice"] = "Dropped files stay in place; recycle them explicitly if unwanted."
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="VHD local helpers. No network, purge, or automatic cleanup.")
     parser.add_argument("--home", default=str(Path(__file__).resolve().parents[1]))
@@ -668,6 +2096,11 @@ def main(argv=None):
     subs = parser.add_subparsers(dest="command", required=True)
     subs.add_parser("init", help="Create missing starter files on Windows")
     subs.add_parser("now", help="Read the host clock")
+    d = subs.add_parser("detect", help="Find VHD home candidates near a folder")
+    d.add_argument("--path")
+    d.add_argument("--depth", type=int, default=3)
+    m = subs.add_parser("manifest", help="Build or refresh the package manifest")
+    m.add_argument("--write", action="store_true")
     r = subs.add_parser("rng", help="Draw random values")
     r.add_argument("mode", choices=["int", "sample", "choose", "shuffle"])
     r.add_argument("--low", type=int)
@@ -707,6 +2140,43 @@ def main(argv=None):
     l = subs.add_parser("records", help="Inspect recovery records")
     l.add_argument("--limit", type=int, default=20)
     l.add_argument("--id")
+    u = subs.add_parser("upgrade", help="Compare a package or archive against this home")
+    u.add_argument("--package")
+    u.add_argument("--zip")
+    u.add_argument("--sha256")
+    u.add_argument("--apply", action="store_true")
+    u.add_argument("--confirm")
+    subs.add_parser("links", help="Check Markdown links and anchors")
+    subs.add_parser("routes", help="Check the startup route manifest")
+    subs.add_parser("audit", help="Scan release files for private or sensitive content").add_argument("--path")
+    rtm = subs.add_parser("runtime", help="Inspect or drive the optional deterministic runtime")
+    rtm.add_argument("action", choices=["status", "add", "start", "pause", "resume", "stop", "run"])
+    rtm.add_argument("--kind", choices=list(RUNTIME_KINDS))
+    rtm.add_argument("--payload")
+    rtm.add_argument("--limit", type=int)
+    rtm.add_argument("--now", action="store_true")
+    gt = subs.add_parser("git", help="Local history and sanitized public export helpers")
+    gt.add_argument("action", choices=["status", "checkpoint", "export", "verify", "publish"])
+    gt.add_argument("--to")
+    gt.add_argument("--path", action="append", default=[])
+    gt.add_argument("--message")
+    gt.add_argument("--confirm")
+    gt.add_argument("--public")
+    gt.add_argument("--include-ignored", action="store_true")
+    rel = subs.add_parser("release", help="Verify version consistency and release contents")
+    rel.add_argument("--project")
+    rel.add_argument("--compare")
+    subs.add_parser("doctor", help="Report capabilities, modes and home health").add_argument(
+        "--mode", choices=["auto", "standard", "enhanced"])
+    me = subs.add_parser("method", help="Validate or show knowledge cards")
+    me.add_argument("action", choices=["check", "show"])
+    me.add_argument("id", nargs="?")
+    me.add_argument("--catalog")
+    st = subs.add_parser("status", help="Derive a compact progression card")
+    st.add_argument("ledger")
+    st.add_argument("--write", action="store_true")
+    lk = subs.add_parser("lock", help="Inspect or quarantine a confirmed stale lock")
+    lk.add_argument("--recover", action="store_true")
     args = parser.parse_args(argv)
     try:
         require(sys.version_info >= (3, 13), "Python 3.13 or newer is required.")
@@ -716,6 +2186,10 @@ def main(argv=None):
                       "zone": now.astimezone().tzname(), "note": "Host clock and zone; not an inferred user location."}
         elif args.command == "rng" and args.mode in {"int", "sample"}:
             result = rng(args, None)
+        elif args.command == "detect":
+            result = {"candidates": find_homes(args.path or os.getcwd(), args.depth)}
+        elif args.command == "manifest":
+            result = manifest_command(args.home, args.write)
         else:
             home = Home(args.home)
             if args.command == "init":
@@ -738,10 +2212,53 @@ def main(argv=None):
                 result = home.plan(args.action, args.path, args.source, args.id, args.reason, args.allow_core)
             elif args.command == "apply":
                 result = home.apply(args.id)
+            elif args.command == "upgrade":
+                result = upgrade(home, args.package, args.apply, args.confirm, args.zip, args.sha256)
+            elif args.command == "links":
+                result = links_check(home)
+            elif args.command == "routes":
+                result = routes_check(home)
+            elif args.command == "release":
+                result = release_check(home, args.project, args.compare)
+            elif args.command == "audit":
+                result = audit(home, args.path)
+            elif args.command == "runtime":
+                result = runtime_command(home, args.action, args.kind, args.payload, args.limit, args.now)
+            elif args.command == "git":
+                if args.action == "status":
+                    result = git_status(home, args.public)
+                elif args.action == "export":
+                    require(args.to, "Provide --to for the export folder.")
+                    result = git_export(home, args.to)
+                elif args.action == "verify":
+                    require(args.to, "Provide --to for the export folder.")
+                    result = git_verify(home, args.to)
+                elif args.action == "publish":
+                    require(args.to and args.confirm, "Provide --to and --confirm for publication.")
+                    result = git_publish(home, args.to, args.confirm, args.message)
+                else:
+                    result = git_checkpoint(home, args.path, args.message, args.include_ignored)
+            elif args.command == "doctor":
+                result = doctor(home, args.mode)
+            elif args.command == "method":
+                result = method_check(home, args.catalog) if args.action == "check" else method_show(
+                    home, args.id, args.catalog)
+            elif args.command == "status":
+                result = status_card(home, args.ledger, args.write)
+            elif args.command == "lock":
+                result = lock_recover(home) if args.recover else lock_report(home)
             else:
                 result = home.records(args.limit, args.id)
-        print(json.dumps({"status": "OK", **result}, ensure_ascii=True))
-        return 0
+        status = "OK"
+        code = 0
+        if args.command in {"links", "routes", "release", "method", "audit"} and result.get("failed"):
+            status, code = "FAIL", 1
+        elif args.command == "git" and args.action == "verify" and not result.get("passed"):
+            status, code = "FAIL", 1
+        elif args.command == "upgrade" and result.get("pending"):
+            status, code = "PARTIAL", 3
+        print(json.dumps({"status": status, **result}, ensure_ascii=True))
+        return code
     except (SafetyError, OSError, ValueError, KeyError, TypeError, RecursionError) as e:
         print(json.dumps({"status": "ERROR", "error": str(e),
                           "recovery": "Inspect existing records and payloads before retrying any interrupted mutation."}))

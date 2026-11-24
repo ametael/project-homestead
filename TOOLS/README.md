@@ -36,7 +36,16 @@ Each read returns a SHA-256 and, when more text remains, a `next_offset`. Contin
 
 `python TOOLS/vhd.py write PATH --sha256 HASH` reads one UTF-8 JSON object from stdin containing a single `text` field with the full replacement. Send it as data through the host's stdin or safe argument transport. Do not interpolate file content into executable shell expressions.
 
-Use the current `read` SHA-256 for an existing file, or `absent` to create a new file. Creation can make missing parent folders under `PERSONA`, `MEMORY`, `PROJECTS`, or `ASSETS`. The command never overwrites an existing path in create mode. For an update, it snapshots the prior file, checks for drift, installs the replacement and verifies the resulting hash. The response includes `changed` and the recovery snapshot ID when applicable. The limit is 256 KiB of UTF-8 text. Windows only.
+Use the current `read` SHA-256 for an existing file, or `absent` to create a new file. Creation can make missing parent folders under `PERSONA`, `MEMORY`, `PROJECTS`, or `ASSETS`. The command never overwrites an existing path in create mode. For an update, it snapshots the prior file, checks for drift, installs the replacement and verifies the resulting hash. The response includes `changed` and the recovery snapshot ID when applicable. The limit is 256 KiB of UTF-8 text. Windows and POSIX hosts are supported; Windows is tested here.
+
+## Knowledge cards
+
+```text
+python TOOLS/vhd.py method check
+python TOOLS/vhd.py method show eng.example
+```
+
+Check validates every card in the local `MEMORY/KNOWLEDGE/` catalog, or the shipped catalog when the local one is absent. It reports a missing or duplicate ID, an invalid status, a missing required field, a `FAILED` card without a replacement, and a `SUPERSEDED` card without a target. Show returns one card bounded to 8 KiB. Both are read-only.
 
 ## Progression
 
@@ -46,6 +55,15 @@ python TOOLS/vhd.py xp-preview PERSONA/PROGRESSION/EXP.md --id first-task.summar
 ```
 
 For another selected owner, use the exact path to that owner's EXP ledger. Stats derive levels, skills, and titles from the Markdown ledger and the current class catalog. Preview reports the projected total and delta without writing. An incomplete row or duplicate contribution ID is an error. Continue to use the [levelling workflow](../OPERATIONS/LEVELLING.md) to verify evidence and save approved changes.
+
+A compact derived card is optional:
+
+```text
+python TOOLS/vhd.py status PERSONA/PROGRESSION/EXP.md
+python TOOLS/vhd.py status PERSONA/PROGRESSION/EXP.md --write
+```
+
+`--write` stores `STATUS.json` beside the ledger with fingerprints for the ledger, the class catalog and the derivation rules. A later run reports `fresh` only while those sources are unchanged. The card is derived data and never replaces the ledger.
 
 ## RNG
 
@@ -69,9 +87,48 @@ python TOOLS/vhd.py inspect START_HERE.md --sha256 --links
 
 Time reports the host clock/zone, not the user's location. Inspect reads the exact selected path and returns bounded metadata, optional SHA-256, and relative Markdown link findings. Bytes are not tokens. Links are not fetched over the network.
 
+## Release consistency
+
+```text
+python TOOLS/vhd.py release
+python TOOLS/vhd.py release --project ..
+python TOOLS/vhd.py release --compare ../publish-v0.3.1
+```
+
+Compares the manifest version with the tool version, the README and verification headers, and the newest changelog heading. Then it recomputes the shipped file hashes and reports missing, extra or changed entries. `--project` adds the project-level README and handoff version lines. `--compare` byte-checks a prepared release folder against the manifest. Findings name the path, the expected value and what was found; any finding exits 1.
+
+## Capability report
+
+```text
+python TOOLS/vhd.py doctor
+```
+
+Read-only. Reports the runtime, the home root and present user areas, manifest version and size drift, home state validity, startup part count and bytes, lock presence with a verified status, available and selected modes, the deterministic command list and current limits. Sizes are bytes, not tokens. Package hashes are not recomputed; run release for those. `--mode auto|standard|enhanced` reports the selection without writing, and `MEMORY/CONFIG.json` with `{"schema": 1, "mode": "standard"}` pins a mode. The same report shows the `license_compliance` preference and whether `SYSTEM/POLICIES/EULA.md` is present; disabling the check adds one warning and grants no additional rights.
+
+## Release audit
+
+```text
+python TOOLS/vhd.py audit
+python TOOLS/vhd.py audit --path ../release
+```
+
+Read-only scan of the shipped files, or of another release folder. Reports private-key headers, credential-looking assignments, local absolute paths, environment files and runtime artifacts. Private markers come from `private_markers` in `MEMORY/CONFIG.json`, up to 20 short strings, because the package must not ship private names. Findings stay redacted to pattern, path and line; no file content is printed and nothing is rewritten. Git history is not scanned; use Git on the repository for that.
+
+## Runtime
+
+```text
+python TOOLS/vhd.py runtime status
+python TOOLS/vhd.py runtime add --kind audit
+python TOOLS/vhd.py runtime start
+python TOOLS/vhd.py runtime run
+python TOOLS/vhd.py runtime stop --now
+```
+
+Optional and disabled until `autonomous_opt_in` is true in user config. State lives in `MEMORY/RUNTIME/`. An inference task is blocked without a provider adapter, so no request or cost occurs. Status is read-only; start, pause, resume, stop and run write local records only.
+
 ## Recovery
 
-Mutation is supported on Windows only in this version. Other platforms fail closed. The helper is a local recovery mechanism, not a global sandbox. Use one active writer per home.
+Mutation runs on Windows and POSIX hosts. Windows behaviour is tested in this environment; Linux and macOS are NOT RUN. A platform without the required primitives fails closed. The helper is a local recovery mechanism, not a global sandbox. Use one active writer per home.
 
 First preview:
 
@@ -109,13 +166,36 @@ Apply the returned restore plan. Restore copies the retained version and keeps o
 
 A core file snapshot/update/restore needs explicit core-edit intent and --allow-core. Ordinary cleanup cannot move core or data roots. All Git metadata, links/junctions, hardlinked files, special files, and cross-filesystem targets are refused. Folders containing .git are refused. Targets are capped at 10000 entries and 512 MiB total.
 
+## Smart Git
+
+```text
+python TOOLS/vhd.py git status
+python TOOLS/vhd.py git checkpoint --path MEMORY/PRIVATE/note.md --message "..." --include-ignored
+python TOOLS/vhd.py git export --to ../../public
+python TOOLS/vhd.py git verify --to ../../public
+python TOOLS/vhd.py git publish --to ../../public --confirm FINGERPRINT --message "..."
+```
+
+The local repository keeps the private workspace history. Ignored persona, memory and project files need `--include-ignored` on a checkpoint, because the shipped ignore rules stay unchanged and are not a privacy boundary.
+
+The public export is a physically separate folder. Export copies only the manifest allowlist plus `MANIFEST.json`, refuses a package that already has release findings, and writes `SOURCE.json` with the export fingerprint. Verify rehashes every file, rejects extra files, and reruns release and audit against the export; it exits 1 on any finding. Publish requires that verified fingerprint, initializes a separate repository when needed, keeps its existing history, configures no remote and never pushes. A remote push needs the user's own explicit approval.
+
+## Locks
+
+```text
+python TOOLS/vhd.py lock
+python TOOLS/vhd.py lock --recover
+```
+
+Reports `absent`, `live`, `stale` or `unknown` with the recorded host, PID, process birth mark and creation time. Recovery quarantines the file into `.recycle/locks/` with a record, and only when the same host confirms that the owning process is gone. Everything else fails closed.
+
 ## Interruptions
 
 Inspect the operation ID, record state, payload, and target before retrying. Prepared/captured/ready records are not completion. A moved item can be restored from its retained payload even if final recording was interrupted. A failed capture leaves the original in place; do not restore an unverified partial payload.
 
 If update stops after old_retained, the original path may be absent while payload and displaced preserve the old version. Plan restore from that operation ID. If a target exists, retain it before any backtracking.
 
-A lock blocks overlapping helper mutations. After a crash, inspect .recycle/operation.lock and pending records; do not clear a lock automatically or retry blindly. No automatic reconciliation or lock-breaking command is provided. Internal lock and record-temporary housekeeping never purges retained user payloads.
+A lock blocks overlapping helper mutations and now covers a whole upgrade batch. Inspect it with `python TOOLS/vhd.py lock` before acting. `python TOOLS/vhd.py lock --recover` quarantines a confirmed stale lock into `.recycle/locks/` with a record and is refused for a foreign host, a legacy record, a missing birth mark or a reused PID. Do not remove a lock by age or by hand, and do not retry an applied plan blindly. Internal lock and record-temporary housekeeping never purges retained user payloads.
 
 Records are bound to their original home path. Do not edit manifests to make a moved archive appear valid. Cross-device migration of active Markdown is separate from archive transaction recovery.
 

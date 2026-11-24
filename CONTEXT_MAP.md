@@ -11,6 +11,8 @@
 | Development or technical verification | [Development](OPERATIONS/DEVELOPMENT.md) and relevant project sources |
 | Writes, recovery or Git | [Files and Git](OPERATIONS/FILES_AND_GIT.md) |
 | Checkpoint, interruption or resume | [Continuity](OPERATIONS/CONTINUITY.md) |
+| Optional runtime, queue or budget | [Runtime](OPERATIONS/RUNTIME.md) |
 | Local tool discovery, bounded reads, validation or stats | Applicable [optional tool](TOOLS/README.md) section |
+| Third-party license question | [License briefing](SYSTEM/POLICIES/EULA.md) |
 
 Follow required dependencies. Open index → relevant entry → owning source. Report missing, stale or incomplete material and recover only the affected scope.

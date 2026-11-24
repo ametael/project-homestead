@@ -10,7 +10,7 @@ For removal use recycle or archive moves. Archive deliberately retained versions
 
 Protected core files may only be snapshotted/updated/restored as exact files with explicit core-edit intent and `--allow-core`. Ordinary cleanup cannot remove core, data roots, tool sources, Git metadata, or retention stores. Folders containing Git metadata are refused; use project version control and scoped source snapshots instead.
 
-If interrupted, inspect the operation record and actual payload/target state. Preserve both copies when uncertain. Do not blindly retry an applied plan or clear a stale lock. A same-drive archive is not an independent backup.
+If interrupted, inspect the operation record and actual payload/target state. Preserve both copies when uncertain. Do not blindly retry an applied plan or clear a stale lock; use `lock` to inspect and `lock --recover` only for a confirmed stale owner. A same-drive archive is not an independent backup.
 
 The helper cannot intercept arbitrary editor/terminal actions. Follow host restrictions for hard enforcement. Do not bypass a refusal by using another command.
 

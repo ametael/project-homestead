@@ -15,6 +15,8 @@ Before saving, look up the ID in the owner's current ledger. If it exists, keep 
 
 At closeout of qualifying work, check the evidence, run the [Swiss Knife EXP preview](../TOOLS/README.md#progression) when available, and save the owner's updated Markdown ledger with the guarded write command. Preview is arithmetic. Verify the resulting stats after recording. Routine work and equal or lower replays require no ledger edit. User EXP remains opt-in.
 
+A derived `STATUS.json` beside the ledger is optional. `python TOOLS/vhd.py status LEDGER --write` regenerates it and records fingerprints for the ledger, the class catalog and the derivation rules. It is a cache, never a second source of truth, and a changed source makes it stale.
+
 ## Level, classes and titles
 
 Sum awarded EXP once per ID. Level thresholds for levels 1–4 are 0, 5, 12 and 22 EXP. Each level beyond 4 costs another 10 EXP. Cap level at 255 and keep recording earned EXP.

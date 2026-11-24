@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "note": "Startup parts. Each file stays under its limit so one session can load the whole set.",
+  "parts": [
+    {"id": "start", "path": "START_HERE.md", "limit": 4096},
+    {"id": "map", "path": "CONTEXT_MAP.md", "limit": 4096},
+    {"id": "personas", "path": "OPERATIONS/PERSONAS.md", "limit": 4096},
+    {"id": "operation-index", "path": "OPERATIONS/INDEX.md", "limit": 4096},
+    {"id": "home-handoff", "path": "MEMORY/HANDOFF.md", "limit": 4096, "required": false},
+    {"id": "owner-handoff", "path": "PERSONA/HANDOFF.md", "limit": 4096, "required": false}
+  ]
+}

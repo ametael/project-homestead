@@ -2,6 +2,8 @@
 
 For all work, understand the request, inspect actual sources, preserve accepted behavior, implement the smallest complete change, verify it, and stop when requirements pass.
 
+For substantial implementation, debugging or refactoring, check a `FAILED` entry on the same topic before reaching for a successful method. One lookup of the knowledge index, at most two cards, and name the ID you used or state plainly that none matched.
+
 For substantial new work, research the actual runtime, versions, architecture and relevant primary references. Analyze suitable approaches. Present scope, interfaces, sequence and acceptance checks. Obtain approval before implementation and reuse that authorization for work within scope.
 
 A small fix needs focused source/caller inspection, coherent repair, and proportionate validation. Do not disguise a new feature as a fix. Do not reopen accepted work without a defect, new requirement, or material evidence.

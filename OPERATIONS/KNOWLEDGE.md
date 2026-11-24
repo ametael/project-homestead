@@ -19,3 +19,15 @@ An owner can record a method as `referenced` in its [experience record](../TEMPL
 ## Validation and retrieval
 
 Run `python TOOLS/vhd.py method check` before trusting or adding a card. It reports a missing ID, a duplicate ID, an invalid status, a missing required field, a `fail.` ID without a replacement, and a `SUPERSEDED` card without a target. Read one card with `python TOOLS/vhd.py method show ID`. Both commands are read-only and resolve the local `MEMORY/KNOWLEDGE/` first, then the shipped catalog.
+
+Without Python, read one card and confirm in order: a single stable ID, unique in the catalog; one status from the five allowed words; every required label for that kind of card, each with a value; a replacement or open question plus a recheck trigger on a `FAILED` card; the active ID on a `SUPERSEDED` card; evidence that names a check and a date another reader could repeat. The file is the fact and the tool is the report; when they disagree, correct the file.
+
+## From proposal to card
+
+A proposal is not knowledge. Three steps keep the catalog honest:
+
+1. Propose the idea as `HYPOTHESIS`, together with the check that would settle it.
+2. Verify by running that check and recording the command, environment, result and date.
+3. Register the card as `VERIFIED` only after a passing check, with the steward and the approval date.
+
+Never register your own untested proposal as `VERIFIED`, and never widen a claim past the environment that was tested. When a recheck trigger fires, the card becomes `STALE` until it is tested again.

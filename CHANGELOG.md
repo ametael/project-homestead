@@ -2,6 +2,26 @@
 
 One line per change. Newest version first.
 
+## 0.7.0
+
+- `vhd.py index` builds a derived content index in `MEMORY/CACHE/index.json` from UTF-8 text files, hashes only files whose size or timestamp moved, and reports a detected rename when a removed path and a new path share content.
+- `vhd.py index --full` rehashes every document and reports drift against the previous index as missing, extra and changed.
+- `vhd.py search QUERY` returns path, matched words, occurrences, line and a bounded snippet, ordered by matched words, occurrences and path; adaptive ranking stays off.
+- Every search result carries a freshness state and a warning when the list was not checked in that call.
+- `vhd.py heal` runs detect, diagnose, repair, verify and restore with two attempts, a 45 second budget and 300 second duplicate suppression.
+- Fallback to a bounded direct scan is emergency-only and reported, and a healthy index is restored to the primary path automatically.
+- Repair touches derived cache only; package code, Markdown and user files are never rewritten.
+- `doctor` reports the index and health cache state, and the command list now includes `index`, `search` and `heal`.
+- New `OPERATIONS/RECOVERY.md` owns the repair ladder, fallback, canonical versus derived state and journal rules.
+- New `TEMPLATES/RECOVERY.json` is a portable journal for bounded multi-step changes.
+- `OPERATIONS/CONTEXT.md` gains the L0 to L4 disclosure table, request-based subset selection and a freshness rule for reused data.
+- `OPERATIONS/KNOWLEDGE.md` gains a manual card check without Python and a three step proposal gate.
+- `upgrade` installs the package `MANIFEST.json` and reports `manifest_updated`, so a later release check describes the installed package.
+- Upgrade snapshots now accept any file listed in the package manifest, not only named core files; 0.6.0 stopped on a changed `CHANGELOG.md`.
+- `UPDATE.md` records that workaround for 0.6.0 homes and the manifest behaviour.
+- `TOOLS/README.md` gains task subsets, the index and search reference, and the repair reference.
+- `TUTORIAL.txt` carries a three-line short version and a current version header; `README.md` states the same setup path in one sentence.
+
 ## 0.6.0
 
 - Optional Smart Git interface: `git status`, `checkpoint`, `export`, `verify` and `publish`.

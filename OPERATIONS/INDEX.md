@@ -12,6 +12,7 @@ Every rule module in this folder, owned by the package. Local rules belong in `M
 | [Levelling](LEVELLING.md) | Scoring EXP, classes, tiers and titles |
 | [Memory](MEMORY.md) | Recording durable facts, keeping privacy boundaries, reading an inbox |
 | [Personas](PERSONAS.md) | Selecting an owner, adding one, handing work over |
+| [Recovery](RECOVERY.md) | Repairing derived state, rebuilding an index, resuming a scoped change |
 | [Runtime](RUNTIME.md) | Running the optional deterministic queue, budgets and emergency stop |
 
 Check the package with `python TOOLS/vhd.py routes` after editing this index or `ROUTES.json`.

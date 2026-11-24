@@ -1,5 +1,5 @@
 {
- "exported_at": "2026-11-24T07:45:08.795291+00:00",
+ "exported_at": "2026-11-24T11:08:11.488614+00:00",
  "files": [
   ".gitignore",
   "AGENTS.md",
@@ -20,6 +20,7 @@
   "OPERATIONS/LEVELLING.md",
   "OPERATIONS/MEMORY.md",
   "OPERATIONS/PERSONAS.md",
+  "OPERATIONS/RECOVERY.md",
   "OPERATIONS/RUNTIME.md",
   "README.md",
   "ROUTES.json",
@@ -43,6 +44,7 @@
   "TEMPLATES/PRIVATE_INDEX.md",
   "TEMPLATES/PROGRESS.md",
   "TEMPLATES/PROJECT.md",
+  "TEMPLATES/RECOVERY.json",
   "TEMPLATES/VOICE.md",
   "TOOLS/README.md",
   "TOOLS/vhd.py",
@@ -51,7 +53,7 @@
   "VERIFICATION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "9ffc5e0998ce03f31343923218454508387befe0a5998a43bc9d0756b919e73b",
+ "fingerprint": "f01bbd8fc3b5843893f1d074283c565dfdd15850599ee237345c999b3d904c55",
  "schema": 1,
- "version": "0.6.0"
+ "version": "0.7.0"
 }

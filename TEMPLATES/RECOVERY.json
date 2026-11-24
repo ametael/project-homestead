@@ -1,0 +1,35 @@
+{
+ "schema": "vhd.recovery",
+ "schema_version": 1,
+ "objective": "Describe one bounded change so another session can resume it without guessing.",
+ "authority": "State who approved the work, or unrecorded.",
+ "baseline": {
+  "commit": null,
+  "files": 0,
+  "bytes": 0
+ },
+ "checkpoint": "CP0",
+ "operations": [
+  {
+   "id": "CP0",
+   "phase": "scope and baseline",
+   "status": "PLANNED",
+   "originals_touched": [],
+   "created": [],
+   "backup": {
+    "destination": "../backups/example",
+    "files": 0,
+    "bytes": 0,
+    "manifest": "MANIFEST.json"
+   },
+   "evidence": {},
+   "next": "CP1"
+  }
+ ],
+ "pending": [],
+ "blockers": [],
+ "rollback": {
+  "method": "Restore the listed originals from the scoped backup, then rebuild derived state.",
+  "created_bytes": 0
+ }
+}

@@ -15,11 +15,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import unquote
 import uuid
 import zipfile
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 LIMIT_FILES = 10000
 LIMIT_BYTES = 512 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024
@@ -37,6 +38,22 @@ SKIP_ROOTS = USER_ROOTS | {".recycle"}
 SKIP_PARTS = {".git", ".recycle", "__pycache__"}
 MANIFEST_KINDS = {"meta", "operations", "tool", "template", "knowledge", "state", "user"}
 ROUTE_LIMIT = 4096
+INDEX_NAME = "MEMORY/CACHE/index.json"
+HEALTH_NAME = "MEMORY/CACHE/health.json"
+HEAL_LOG_NAME = "MEMORY/CACHE/selfheal.jsonl"
+INDEX_SCHEMA = 1
+INDEX_RULES = "index-1"
+INDEX_SUFFIXES = {".md", ".json", ".txt", ".py", ".cfg", ".ini", ".toml", ".yml", ".yaml",
+                  ".csv", ".html", ".css", ".js", ".ps1", ".cmd", ".sh"}
+INDEX_EXCLUDED_PARTS = {"archive", ".recycle", ".git", "__pycache__"}
+INDEX_DERIVED_PREFIXES = ("MEMORY/CACHE/", "MEMORY/RUNTIME/")
+INDEX_PRIVATE_PARTS = {"private"}
+INDEX_TERM_LIMIT = 8192
+SEARCH_LIMIT = 50
+REFRESH_SECONDS = 60
+HEAL_ATTEMPTS = 2
+HEAL_BUDGET_SECONDS = 45
+HEAL_DEDUPE_SECONDS = 300
 EVENT_HOOK = None
 
 
@@ -511,6 +528,20 @@ class Home:
             require(target.exists(), "Selected path does not exist.")
         return target
 
+    def package_files(self):
+        if getattr(self, "_package_files", None) is None:
+            path = self.path(MANIFEST_NAME)
+            found = set()
+            if path.is_file() and path.stat().st_size <= 4 * 1024 * 1024:
+                try:
+                    manifest = check_manifest(json.loads(path.read_text(encoding="utf-8")))
+                except (ValueError, SafetyError):
+                    manifest = None
+                if manifest:
+                    found = {entry["path"] for entry in manifest["files"]}
+            self._package_files = found
+        return self._package_files
+
     def target(self, raw, action, allow_core=False):
         relative = clean_relative(raw)
         p = self.path(raw, exists=True)
@@ -520,7 +551,8 @@ class Home:
         else:
             is_core_file = (len(relative.parts) == 1 and first in CORE_FILES) or (
                 first in CORE_ROOTS and len(relative.parts) > 1 and p.is_file())
-            require(action in {"snapshot", "update", "restore"} and allow_core and is_core_file,
+            is_package_file = relative.as_posix() in self.package_files()
+            require(action in {"snapshot", "update", "restore"} and allow_core and (is_core_file or is_package_file),
                     "Target is protected or outside the permitted data areas.")
         return p
 
@@ -670,7 +702,8 @@ class Home:
                 relative = clean_relative(target)
                 if relative.parts[0] not in DATA_ROOTS:
                     allowed = (len(relative.parts) == 1 and relative.parts[0] in CORE_FILES) or (
-                        relative.parts[0] in CORE_ROOTS and len(relative.parts) > 1 and source.is_file())
+                        relative.parts[0] in CORE_ROOTS and len(relative.parts) > 1 and source.is_file()) or (
+                        relative.as_posix() in self.package_files())
                     require(allowed and plan.get("allow_core"), "Core restore is not authorized.")
                 else:
                     require(len(relative.parts) > 1, "Data root restore is refused.")
@@ -1177,9 +1210,9 @@ def release_check(home, project=None, compare=None):
 
 
 PENDING_SURFACES = ()
-COMMANDS = ("apply", "audit", "detect", "doctor", "git", "init", "inspect", "links", "lock", "manifest",
-            "method", "now", "plan", "read", "records", "release", "rng", "routes", "runtime", "stats",
-            "status", "upgrade", "validate", "write", "xp-preview")
+COMMANDS = ("apply", "audit", "detect", "doctor", "git", "heal", "index", "init", "inspect", "links",
+            "lock", "manifest", "method", "now", "plan", "read", "records", "release", "rng", "routes",
+            "runtime", "search", "stats", "status", "upgrade", "validate", "write", "xp-preview")
 CARD_STATUS = {"VERIFIED", "HYPOTHESIS", "FAILED", "STALE", "SUPERSEDED"}
 CARD_LABELS = ("Stable ID", "Title", "Status", "Steward", "Use when", "Procedure",
                "Environment and prerequisites", "What was tried", "What was assumed", "What actually happened",
@@ -1398,12 +1431,20 @@ def doctor(home, mode=None):
         warnings.append("License checks are disabled; this grants no additional rights.")
     modes = mode_report(home, mode)
     warnings = modes["warnings"] + warnings
+    cache = {"index": {"present": home.path(INDEX_NAME).is_file()}, "health": None}
+    try:
+        health = health_read(home)
+    except (SafetyError, OSError):
+        health = None
+    if health:
+        cache["health"] = {"state": health.get("state"), "updated": health.get("updated"),
+                           "documents": health.get("documents")}
     return {"runtime": runtime, "commands": list(COMMANDS),
             "home": {"root": home.root.as_posix(),
                      "user_areas": sorted(name for name in USER_ROOTS if home.path(name).exists())},
             "package": package, "state": state_info, "version_in_sync": version_sync,
             "startup": {"parts": len(startup["parts"]), "failed": startup["failed"], "bytes": startup_bytes},
-            "lock": lock_info, "modes": modes,
+            "lock": lock_info, "modes": modes, "cache": cache,
             "license": {"compliance": compliance, "briefing": "SYSTEM/POLICIES/EULA.md",
                         "briefing_present": briefing.is_file()},
             "warnings": warnings,
@@ -2045,7 +2086,7 @@ def upgrade_package(home, package, write=False, confirm=None):
               "manifest_source": manifest_source, "mode": "normal" if state else "degraded",
               "fingerprint": fingerprint, "counts": counts, "pending": len(pending),
               "migrations": manifest.get("migrations", []),
-              "entries": entries, "written": []}
+              "entries": entries, "written": [], "manifest_updated": False}
     if interrupted is not None:
         result["interrupted"] = interrupted
     if not write:
@@ -2055,9 +2096,19 @@ def upgrade_package(home, package, write=False, confirm=None):
     require_mutation()
     require(not manifest.get("migrations"),
             "This package lists migrations; apply them explicitly before this update.")
+    manifest_data = None
+    manifest_file = pkg / MANIFEST_NAME
+    if manifest_file.is_file():
+        require(manifest_file.stat().st_size <= 4 * 1024 * 1024, "Package manifest is oversized.")
+        manifest_data = manifest_file.read_bytes()
+        require(digest(packed(check_manifest(json.loads(manifest_data.decode("utf-8"))))) ==
+                digest(packed(manifest)), "Package manifest file does not match the parsed plan.")
+    current_manifest = home.path(MANIFEST_NAME)
+    manifest_current = bool(manifest_data is not None and current_manifest.is_file()
+                            and hash_file(current_manifest) == digest(manifest_data))
     writable = [entry for entry in entries if entry["class"] in {"new", "stale"}]
     applied = [entry["path"] for entry in entries if entry["class"] == "applied"]
-    if not writable and not applied:
+    if not writable and not applied and manifest_current:
         result["notice"] = "Already current; nothing safe to write."
         return result
     snapshots = []
@@ -2077,6 +2128,9 @@ def upgrade_package(home, package, write=False, confirm=None):
             require(digest(data) == entry["package_sha256"], "Package file changed after the plan.")
             install_bytes(home.path(entry["path"]), data)
             result["written"].append(entry["path"])
+        if manifest_data is not None and not manifest_current:
+            install_bytes(current_manifest, manifest_data)
+            result["manifest_updated"] = True
         record_state(home.path(STATE_NAME), state_document(manifest, previous=state))
         pending_file.unlink()
     result["state_written"] = True
@@ -2087,6 +2141,461 @@ def upgrade_package(home, package, write=False, confirm=None):
     if counts.get("dropped"):
         result["notice"] = "Dropped files stay in place; recycle them explicitly if unwanted."
     return result
+
+
+def tokens_of(text):
+    return re.findall(r"[^\W_]{2,}", text.casefold())
+
+
+def index_scope(relative):
+    text = relative.as_posix()
+    if text.startswith(INDEX_DERIVED_PREFIXES):
+        return False
+    folded = {part.casefold() for part in relative.parts}
+    if folded & INDEX_EXCLUDED_PARTS or folded & INDEX_PRIVATE_PARTS:
+        return False
+    return relative.suffix.lower() in INDEX_SUFFIXES
+
+
+def index_entry(path, relative, previous=None, full=False):
+    s = check_node(path)
+    entry = {"path": relative.as_posix(), "bytes": s.st_size, "mtime_ns": s.st_mtime_ns}
+    if not full and previous and previous.get("bytes") == s.st_size and previous.get("mtime_ns") == s.st_mtime_ns \
+            and previous.get("sha256"):
+        entry.update({"sha256": previous["sha256"], "terms": previous.get("terms", {}),
+                      "words": previous.get("words", 0)})
+        return entry, False
+    if s.st_size > TEXT_LIMIT:
+        entry.update({"sha256": None, "terms": {}, "words": 0, "skipped": "oversized"})
+        return entry, False
+    entry["sha256"] = hash_file(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        entry.update({"terms": {}, "words": 0, "skipped": "not-utf8"})
+        return entry, True
+    tokens = tokens_of(text)
+    counts = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    if len(counts) > INDEX_TERM_LIMIT:
+        counts = dict(sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:INDEX_TERM_LIMIT])
+    entry.update({"terms": counts, "words": len(tokens)})
+    return entry, True
+
+
+def index_build(home, previous=None, full=False):
+    previous_docs = {}
+    if isinstance(previous, dict):
+        for doc in previous.get("documents", []):
+            if isinstance(doc, dict) and isinstance(doc.get("path"), str):
+                previous_docs[doc["path"]] = doc
+    documents = []
+    skipped = []
+    hashed = 0
+    for path in sorted(home.root.rglob("*")):
+        relative = path.relative_to(home.root)
+        if not index_scope(relative):
+            continue
+        try:
+            if not path.is_file():
+                continue
+            entry, changed = index_entry(path, relative, previous_docs.get(relative.as_posix()), full)
+        except (OSError, SafetyError) as error:
+            skipped.append({"path": relative.as_posix(), "reason": str(error)[:160]})
+            continue
+        hashed += int(changed)
+        documents.append(entry)
+        require(len(documents) <= LIMIT_FILES, "The home has too many indexable files.")
+    current = {doc["path"] for doc in documents}
+    by_hash = {}
+    for doc in documents:
+        if doc.get("sha256"):
+            by_hash.setdefault(doc["sha256"], []).append(doc["path"])
+    added = sorted(current - set(previous_docs))
+    removed = sorted(set(previous_docs) - current)
+    renamed = []
+    ambiguous = []
+    for old in removed:
+        key = previous_docs[old].get("sha256")
+        candidates = sorted(path for path in by_hash.get(key, []) if path in added) if key else []
+        if len(candidates) == 1:
+            renamed.append({"from": old, "to": candidates[0]})
+            added.remove(candidates[0])
+        elif candidates:
+            ambiguous.append({"from": old, "candidates": candidates})
+    value = {"schema": INDEX_SCHEMA, "rules": INDEX_RULES, "generated": stamp(), "checked": stamp(),
+             "count": len(documents), "documents": documents, "renamed": renamed,
+             "ambiguous": ambiguous, "hashed": hashed, "skipped": skipped[:20]}
+    if full:
+        new_map = {doc["path"]: doc for doc in documents}
+        value["drift"] = {
+            "missing": [path for path in sorted(previous_docs) if path not in new_map],
+            "extra": added,
+            "changed": [path for path in sorted(set(new_map) & set(previous_docs))
+                        if new_map[path].get("sha256") != previous_docs[path].get("sha256")]}
+    return value
+
+
+def index_read(home):
+    path = home.path(INDEX_NAME)
+    if not path.is_file():
+        return None
+    require(path.stat().st_size <= 64 * 1024 * 1024, "The content index is oversized; rebuild it.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise SafetyError("The content index is unreadable; rebuild it.")
+    require(isinstance(value, dict), "The content index must be an object.")
+    require(value.get("schema") == INDEX_SCHEMA and value.get("rules") == INDEX_RULES,
+            "The content index was written by another ruleset; rebuild it.")
+    require(isinstance(value.get("documents"), list), "The content index has no document list.")
+    return value
+
+
+def index_write(home, value):
+    target = home.path(INDEX_NAME)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    check_chain(target.parent)
+    install_bytes(target, (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
+
+
+def index_drift(home, document):
+    indexed = {doc["path"]: doc for doc in document.get("documents", []) if isinstance(doc, dict)}
+    seen = set()
+    changed = []
+    for path in sorted(home.root.rglob("*")):
+        relative = path.relative_to(home.root)
+        if not index_scope(relative):
+            continue
+        text = relative.as_posix()
+        try:
+            if not path.is_file():
+                continue
+            s = check_node(path)
+        except (OSError, SafetyError):
+            continue
+        seen.add(text)
+        doc = indexed.get(text)
+        if doc is None or doc.get("bytes") != s.st_size or doc.get("mtime_ns") != s.st_mtime_ns:
+            changed.append(text)
+    return {"missing": sorted(set(indexed) - seen), "extra": sorted(seen - set(indexed)), "changed": sorted(changed)}
+
+
+def seconds_since(text):
+    if not isinstance(text, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - moment).total_seconds())
+
+
+def index_refresh(home, full=False, force=False):
+    previous = None
+    recovered = False
+    try:
+        previous = index_read(home)
+    except (SafetyError, OSError):
+        previous = None
+        recovered = True
+    if previous is not None and not full and not force:
+        age = seconds_since(previous.get("checked"))
+        if age is not None and age < REFRESH_SECONDS:
+            return {"index": previous, "state": "throttled", "age_seconds": int(age), "written": False,
+                    "recovered": False}
+    try:
+        with home.lock():
+            value = index_build(home, previous, full)
+            value["checked"] = stamp()
+            index_write(home, value)
+    except SafetyError as error:
+        if lock_path(home).is_file():
+            return {"index": previous, "state": "busy", "reason": str(error)[:200], "written": False,
+                    "recovered": recovered}
+        raise
+    return {"index": value, "state": "verified", "written": True, "recovered": recovered}
+
+
+FRESHNESS_NOTES = {
+    "verified": None,
+    "throttled": "The index was checked inside the refresh window and reused without a rescan; "
+                 "a change made in that window is not visible yet.",
+    "busy": "Another operation holds the home lock; this result comes from the stored index and may be stale.",
+    "reconciled": "The stored index changed during this call; rerun to confirm the current result.",
+    "unindexed": "No usable index; results come from a bounded direct scan.",
+    "error": "The index could not be used; results come from a bounded direct scan.",
+}
+
+
+def freshness_report(state, document, extra=None):
+    report = {"state": state, "index": INDEX_NAME, "checked": (document or {}).get("checked"),
+              "documents": (document or {}).get("count", 0)}
+    note = FRESHNESS_NOTES.get(state)
+    if note:
+        report["freshness_warning"] = note
+    if extra:
+        report.update(extra)
+    return report
+
+
+def index_command(home, full=False):
+    report = index_refresh(home, full=full, force=True)
+    document = report.get("index") or {}
+    return {"index": INDEX_NAME, "written": report.get("written", False),
+            "documents": document.get("count", 0), "hashed": document.get("hashed", 0),
+            "renamed": document.get("renamed", []), "ambiguous": document.get("ambiguous", []),
+            "drift": document.get("drift"), "skipped": document.get("skipped", []),
+            "freshness": freshness_report(report.get("state", "error"), document)}
+
+
+def search_matches(documents, terms, prefix):
+    hits = []
+    for doc in documents:
+        if not isinstance(doc, dict) or doc.get("skipped"):
+            continue
+        path = doc.get("path", "")
+        if prefix and not (path == prefix or path.startswith(prefix + "/")):
+            continue
+        counts = doc.get("terms") or {}
+        matched = [term for term in terms if term in counts]
+        if not matched:
+            continue
+        hits.append({"path": path, "matched": len(matched), "terms": matched,
+                     "occurrences": sum(int(counts[term]) for term in matched),
+                     "bytes": doc.get("bytes")})
+    hits.sort(key=lambda hit: (-hit["matched"], -hit["occurrences"], hit["path"]))
+    return hits
+
+
+def search_scan(home, terms, prefix):
+    hits = []
+    scanned = 0
+    for path in sorted(home.root.rglob("*")):
+        relative = path.relative_to(home.root)
+        if not index_scope(relative):
+            continue
+        text = relative.as_posix()
+        if prefix and not (text == prefix or text.startswith(prefix + "/")):
+            continue
+        try:
+            if not path.is_file():
+                continue
+            s = check_node(path)
+            if s.st_size > TEXT_LIMIT:
+                continue
+            content = path.read_text(encoding="utf-8")
+        except (OSError, SafetyError, UnicodeDecodeError):
+            continue
+        scanned += 1
+        require(scanned <= LIMIT_FILES, "The home has too many files to scan.")
+        counts = {}
+        for token in tokens_of(content):
+            if token in terms:
+                counts[token] = counts.get(token, 0) + 1
+        if counts:
+            hits.append({"path": text, "matched": len(counts), "terms": sorted(counts),
+                         "occurrences": sum(counts.values()), "bytes": s.st_size})
+    hits.sort(key=lambda hit: (-hit["matched"], -hit["occurrences"], hit["path"]))
+    return hits
+
+
+def search_snippet(home, path_text, terms, width=200):
+    try:
+        path = home.path(path_text, exists=True)
+        if not path.is_file() or path.stat().st_size > TEXT_LIMIT:
+            return None
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            folded = line.casefold()
+            if any(term in folded for term in terms):
+                return {"line": number, "text": " ".join(line.split())[:width]}
+    except (OSError, SafetyError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def search_command(home, query, limit=10, scope=None, full=False):
+    terms = sorted(set(tokens_of(query)))
+    require(terms, "Provide at least one search word of two or more letters or digits.")
+    require(1 <= limit <= SEARCH_LIMIT, "Limit must be 1 to 50.")
+    prefix = clean_relative(scope).as_posix() if scope else None
+    document = None
+    state = "verified"
+    warnings = []
+    try:
+        report = index_refresh(home, full=full)
+        document = report.get("index")
+        state = report.get("state", "verified")
+        if report.get("recovered"):
+            warnings.append("the stored index was unreadable and has been rebuilt from the canonical files")
+    except (SafetyError, OSError) as error:
+        warnings.append(str(error)[:200])
+        repaired = heal(home)
+        warnings.append("heal " + repaired["state"])
+        if repaired["state"] == "HEALTHY":
+            try:
+                document = index_read(home)
+                state = "verified"
+            except (SafetyError, OSError):
+                document = None
+        if document is None:
+            state = "unindexed" if repaired["state"] == "HEALTHY" else "error"
+    if document is not None:
+        hits = search_matches(document.get("documents", []), terms, prefix)
+        source = "index"
+    else:
+        hits = search_scan(home, terms, prefix)
+        source = "scan"
+    results = [dict(hit) for hit in hits[:limit]]
+    for hit in results:
+        snippet = search_snippet(home, hit["path"], terms)
+        if snippet:
+            hit["snippet"] = snippet
+    return {"query": query, "terms": terms, "matches": len(hits), "limit": limit, "results": results,
+            "source": source, "freshness": freshness_report(state, document), "warnings": warnings}
+
+
+def health_read(home):
+    path = home.path(HEALTH_NAME)
+    if not path.is_file():
+        return None
+    require(path.stat().st_size <= 64 * 1024, "The health record is oversized.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def health_write(home, value):
+    target = home.path(HEALTH_NAME)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    check_chain(target.parent)
+    install_bytes(target, (json.dumps(value, indent=1, sort_keys=True) + "\n").encode())
+
+
+def heal_record(home, entry):
+    path = home.path(HEAL_LOG_NAME)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    check_chain(path.parent)
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    for line in lines[-200:]:
+        try:
+            previous = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(previous, dict) and previous.get("fingerprint") == entry["fingerprint"]:
+            age = seconds_since(previous.get("at"))
+            if age is not None and age < HEAL_DEDUPE_SECONDS:
+                return {"logged": False, "reason": "deduplicated inside the %d second window" % HEAL_DEDUPE_SECONDS}
+    lines.append(json.dumps(entry, sort_keys=True, separators=(",", ":")))
+    install_bytes(path, ("\n".join(lines[-200:]) + "\n").encode())
+    return {"logged": True, "path": HEAL_LOG_NAME}
+
+
+def heal_outcome(home, state, steps, attempts, document, reason=None, previous=None):
+    fingerprint = digest(packed({"steps": [step["step"] for step in steps], "state": state,
+                                 "documents": (document or {}).get("count", 0)}))[:16]
+    proposal = None
+    if state == "DEGRADED":
+        proposal = {"kind": "proposal", "title": "Derived state needs a human decision",
+                    "detail": reason or "the repair bounds were exhausted",
+                    "steps": [step["step"] for step in steps], "at": stamp()}
+        steps.append({"ladder": "H5", "step": "propose", "title": proposal["title"]})
+    previous_state = (previous or {}).get("state")
+    health = {"schema": 1, "state": state, "updated": stamp(),
+              "reason": reason or "derived state verified",
+              "attempts": attempts, "fingerprint": fingerprint,
+              "documents": (document or {}).get("count", 0)}
+    if proposal:
+        health["proposal"] = proposal
+    if previous_state:
+        health["previous"] = previous_state
+    health_write(home, health)
+    if state == "HEALTHY" and previous_state == "DEGRADED":
+        steps.append({"ladder": "H6", "step": "restore-primary", "state": "HEALTHY"})
+    elif state == "DEGRADED":
+        steps.append({"ladder": "H6", "step": "degraded", "reason": health["reason"]})
+    log = heal_record(home, {"at": stamp(), "state": state, "fingerprint": fingerprint,
+                             "attempts": attempts, "steps": steps})
+    return {"state": state, "fingerprint": fingerprint, "attempts": attempts, "steps": steps,
+            "proposal": proposal, "health": HEALTH_NAME, "log": log,
+            "documents": (document or {}).get("count", 0),
+            "restored_primary": state == "HEALTHY" and previous_state == "DEGRADED",
+            "limits": ["Repair touches derived cache only; package code and user files are never rewritten.",
+                       "Fallback is emergency-only and reports a warning while it is active."]}
+
+
+def heal(home):
+    started = time.monotonic()
+    previous = health_read(home) or {}
+    steps = []
+    attempts = 0
+    document = None
+    reason = None
+    lock_state = lock_report(home)["state"]
+    steps.append({"ladder": "H0", "step": "inspect", "lock": lock_state})
+    try:
+        document = index_read(home)
+        if document is None:
+            steps.append({"ladder": "H1", "step": "index-absent"})
+        else:
+            steps.append({"ladder": "H1", "step": "index-readable", "documents": document.get("count")})
+    except (SafetyError, OSError) as error:
+        document = None
+        steps.append({"ladder": "H1", "step": "index-unreadable", "reason": str(error)[:160]})
+    if lock_state == "stale":
+        attempts += 1
+        try:
+            recovered = lock_recover(home)
+        except (SafetyError, OSError) as error:
+            reason = "the stale lock could not be quarantined: " + str(error)[:160]
+        else:
+            steps.append({"ladder": "H2", "step": "quarantine-stale-lock", "quarantined": recovered["quarantined"]})
+    elif lock_state != "absent":
+        reason = "the home lock is " + lock_state + "; only its owner can clear it"
+        steps.append({"ladder": "H2", "step": "lock-refused", "state": lock_state})
+    if reason is None and document is not None and document.get("count", 0) > 0:
+        drift = index_drift(home, document)
+        steps.append({"ladder": "H2", "step": "reconcile",
+                      "drift": {key: len(value) for key, value in drift.items()}})
+        if not any(drift.values()):
+            steps.append({"ladder": "H4", "step": "verify", "documents": document["count"]})
+            return heal_outcome(home, "HEALTHY", steps, attempts, document, previous=previous)
+    full_rebuild = document is None
+    while reason is None and attempts < HEAL_ATTEMPTS:
+        if time.monotonic() - started > HEAL_BUDGET_SECONDS:
+            reason = "the repair budget of %d seconds was exhausted" % HEAL_BUDGET_SECONDS
+            steps.append({"ladder": "H3", "step": "budget", "seconds": HEAL_BUDGET_SECONDS})
+            break
+        attempts += 1
+        try:
+            report = index_refresh(home, full=full_rebuild, force=True)
+            document = report.get("index")
+        except (SafetyError, OSError) as error:
+            steps.append({"ladder": "H3", "step": "rebuild-failed", "attempt": attempts, "reason": str(error)[:160]})
+            if attempts < HEAL_ATTEMPTS:
+                continue
+            reason = str(error)[:200]
+            break
+        steps.append({"ladder": "H3", "step": "rebuild", "attempt": attempts,
+                      "documents": (document or {}).get("count")})
+        try:
+            value = index_read(home)
+        except (SafetyError, OSError) as error:
+            steps.append({"ladder": "H4", "step": "verify-failed", "attempt": attempts, "reason": str(error)[:160]})
+            continue
+        if value.get("count", 0) <= 0:
+            steps.append({"ladder": "H4", "step": "verify-empty", "attempt": attempts})
+            continue
+        document = value
+        steps.append({"ladder": "H4", "step": "verify", "attempt": attempts, "documents": value["count"]})
+        return heal_outcome(home, "HEALTHY", steps, attempts, document, previous=previous)
+    return heal_outcome(home, "DEGRADED", steps, attempts, document,
+                        reason=reason or "the repair bounds were exhausted", previous=previous)
 
 
 def main(argv=None):
@@ -2175,6 +2684,14 @@ def main(argv=None):
     st = subs.add_parser("status", help="Derive a compact progression card")
     st.add_argument("ledger")
     st.add_argument("--write", action="store_true")
+    ix = subs.add_parser("index", help="Build or refresh the local content index")
+    ix.add_argument("--full", action="store_true")
+    se = subs.add_parser("search", help="Search the local content index")
+    se.add_argument("query")
+    se.add_argument("--limit", type=int, default=10)
+    se.add_argument("--scope")
+    se.add_argument("--full", action="store_true")
+    subs.add_parser("heal", help="Detect, diagnose and repair derived state")
     lk = subs.add_parser("lock", help="Inspect or quarantine a confirmed stale lock")
     lk.add_argument("--recover", action="store_true")
     args = parser.parse_args(argv)
@@ -2245,6 +2762,12 @@ def main(argv=None):
                     home, args.id, args.catalog)
             elif args.command == "status":
                 result = status_card(home, args.ledger, args.write)
+            elif args.command == "index":
+                result = index_command(home, args.full)
+            elif args.command == "search":
+                result = search_command(home, args.query, args.limit, args.scope, args.full)
+            elif args.command == "heal":
+                result = heal(home)
             elif args.command == "lock":
                 result = lock_recover(home) if args.recover else lock_report(home)
             else:
@@ -2256,6 +2779,8 @@ def main(argv=None):
         elif args.command == "git" and args.action == "verify" and not result.get("passed"):
             status, code = "FAIL", 1
         elif args.command == "upgrade" and result.get("pending"):
+            status, code = "PARTIAL", 3
+        elif args.command == "heal" and result.get("state") == "DEGRADED":
             status, code = "PARTIAL", 3
         print(json.dumps({"status": status, **result}, ensure_ascii=True))
         return code

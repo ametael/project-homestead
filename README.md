@@ -1,8 +1,10 @@
 # Virtual Home DIY
 
-Virtual Home DIY 0.6.0 is a Markdown workspace for your AI partner. Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
+Virtual Home DIY 0.7.0 is a Markdown workspace for your AI partner. Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
 
 ## Setup
+
+Short version: extract the package into a folder you keep, open that folder as your agent's working folder, and point the system prompt at [sysprompt_to_copy.txt](sysprompt_to_copy.txt). Step 1 below covers the same setup in detail.
 
 1. On a fresh home, copy the [Vee identity template](TEMPLATES/IDENTITY.md) to `PERSONA/IDENTITY.md`, [owner handoff](TEMPLATES/OWNER_HANDOFF.md) to `PERSONA/HANDOFF.md`, [EXP ledger](TEMPLATES/EXP.md) to `PERSONA/PROGRESSION/EXP.md`, [memory index](TEMPLATES/MEMORY_INDEX.md) to `MEMORY/INDEX.md`, and [home handoff](TEMPLATES/HOME_HANDOFF.md) to `MEMORY/HANDOFF.md`. Create parent folders as needed. Copy only missing files. On a used home, recover missing identity and handoffs from a verified copy.
 2. Keep Vee or choose a name, voice and focus together. Leave personal history blank until you provide facts you want to save.
@@ -15,7 +17,7 @@ To update an older home, back it up or let `python TOOLS/vhd.py upgrade --zip` s
 ## Modes
 
 - **Standard** works on a file-only host. Markdown and JSON access, selective loading, compact readable status, persona customization, memory and knowledge continuity, and manual distillation with the templates.
-- **Enhanced** works on a host with a terminal and Python 3.13+. The [Swiss Knife](TOOLS/README.md) adds deterministic reads, writes, validation, progression, guarded recovery, ZIP updates and read-only diagnostics.
+- **Enhanced** works on a host with a terminal and Python 3.13+. The [Swiss Knife](TOOLS/README.md) adds deterministic reads, writes, validation, progression, guarded recovery, a derived content index with keyword search, a repair ladder, ZIP updates and read-only diagnostics.
 
 Both use one workspace, so switching modes needs no migration and creates no second copy of identity, memory or progress. `python TOOLS/vhd.py doctor` reports the available and selected mode. A user can pin one in `MEMORY/CONFIG.json` with `{"schema": 1, "mode": "standard"}`, or ask for `doctor --mode`. An unavailable or unknown choice falls back with a warning.
 
@@ -26,6 +28,10 @@ Autonomous operation is off by default and never required. With `autonomous_opt_
 ## Start a project
 
 Choose a folder under `PROJECTS/` and copy the [project](TEMPLATES/PROJECT.md) and [handoff](TEMPLATES/HANDOFF.md) templates there as `PROJECT.md` and `HANDOFF.md`. A [checkpoint](TEMPLATES/PROGRESS.md) belongs in that project's `PROGRESS/` folder. Record a reusable method only when it is worth finding again. See [knowledge](OPERATIONS/KNOWLEDGE.md) and [levelling](OPERATIONS/LEVELLING.md).
+
+## Search and repair
+
+Enhanced mode can index the home and search it: `python TOOLS/vhd.py index` then `python TOOLS/vhd.py search "keyword"`. The index lives in `MEMORY/CACHE/`, is rebuilt from the Markdown whenever it drifts, and never replaces a file. `python TOOLS/vhd.py heal` inspects, repairs and verifies that derived state, and a bounded direct scan is the emergency fallback. Standard mode works without any of it. See [recovery](OPERATIONS/RECOVERY.md).
 
 ## Use another chat or app
 
@@ -63,6 +69,8 @@ Only tested behaviour is claimed. Python 3.13 or newer is required for the helpe
 - A local file lock is not coordination between hosts on SMB or NFS.
 - Package integrity is checked per file; publisher authenticity needs a trusted signature that this version does not provide.
 - Inference tasks in the runtime stay blocked until a provider adapter is configured.
+- The content index is derived. A missing or stale index costs speed, not content, and a direct scan is used when it fails.
+- A repair report describes derived state only; it says nothing about files the tool never reads.
 - Recovery helpers reduce risk for operations that use them. They are not a backup.
 
 ## Optional Git

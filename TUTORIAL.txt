@@ -1,5 +1,18 @@
-VIRTUAL HOME DIY 0.4.1
+VIRTUAL HOME DIY 0.7.0
 A quick start for your AI partner
+
+SHORT VERSION
+
+1. Extract VHD into a folder you keep. That folder is the workspace.
+2. In your agent app, open that folder as the working folder.
+3. Point the agent's system prompt at sysprompt_to_copy.txt from the
+   same folder, or send this as the first message:
+
+  Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.
+
+That is the whole setup. Section 1 repeats it with the details, section
+2 uses a Cherry Studio example, and the later sections cover a first
+task, EXP and updates.
 
 1. Open your home
 

@@ -10,7 +10,7 @@ Read this when the user hands you a newer VHD package, a zip, or says "update th
 - the files actually present in this home
 - the manifest of the incoming package
 
-It prints a plan and writes nothing. `--apply --confirm FINGERPRINT` performs the safe part. The fingerprint comes from the dry run, so a plan that changed after the user read it cannot be applied.
+It prints a plan and writes nothing. `--apply --confirm FINGERPRINT` performs the safe part. The fingerprint comes from the dry run, so a plan that changed after the user read it cannot be applied. The package `MANIFEST.json` is installed with the files and reported as `manifest_updated`, so a later `release` check describes the package that is actually installed.
 
 `--zip PATH` accepts the release archive directly. The tool validates every entry, extracts it into a temporary stage beside the archive, compares, and removes the stage afterwards. Add `--sha256 PATH` with a detached digest file to verify the archive bytes before extraction.
 
@@ -72,9 +72,21 @@ Without `HOME_STATE.json` there is no baseline, so no local edit can be told apa
 ## After the update
 
 - `restart_required` means `TOOLS/vhd.py` changed. Start a new command before relying on the new behaviour.
+- `manifest_updated` means the package manifest was replaced. `release` compares against it afterwards.
 - `host_prompt_stale` means `sysprompt_to_copy.txt` changed. A system prompt already pasted into an application is outside this folder. Show the new text and ask the user to replace it.
 - Snapshots of replaced files are listed in the result and can be restored with `vhd.py plan restore --id ID`.
 - A migration listed in the package manifest blocks the apply. Print the step and wait; no incoming code is run automatically.
+
+## Updating from 0.6.0
+
+0.6.0 snapshots a changed file only when it is a named core document or sits under a core folder, so a changed `CHANGELOG.md` stops its own apply. Run the newer tool against the older home instead of the home's current tool:
+
+```text
+python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/VHD_0.7.0.zip --sha256 PATH/TO/VHD_0.7.0.zip.sha256
+python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/VHD_0.7.0.zip --apply --confirm FINGERPRINT
+```
+
+0.6.0 also left the previous package manifest in place after an update; 0.7.0 installs it. Upgrades from 0.7.0 onward need no workaround.
 
 ## Limits
 

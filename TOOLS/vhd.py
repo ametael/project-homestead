@@ -20,7 +20,7 @@ from urllib.parse import unquote
 import uuid
 import zipfile
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 LIMIT_FILES = 10000
 LIMIT_BYTES = 512 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024
@@ -34,7 +34,7 @@ ROUTES_NAME = "ROUTES.json"
 EXPORT_STATE = "SOURCE.json"
 STATE_SCHEMA = 1
 USER_ROOTS = {"PERSONA", "MEMORY", "PROJECTS", "ASSETS", "ARCHIVE"}
-SKIP_ROOTS = USER_ROOTS | {".recycle"}
+SKIP_ROOTS = USER_ROOTS | {".recycle", "tests"}
 SKIP_PARTS = {".git", ".recycle", "__pycache__"}
 MANIFEST_KINDS = {"meta", "operations", "tool", "template", "knowledge", "state", "user"}
 ROUTE_LIMIT = 4096
@@ -237,6 +237,13 @@ def check_manifest(value):
         require(isinstance(entry.get("bytes"), int) and entry["bytes"] >= 0, "Invalid manifest size.")
     require(isinstance(value.get("moved", []), list), "Manifest moves must be a list.")
     require(isinstance(value.get("migrations", []), list), "Manifest migrations must be a list.")
+    extras = value.get("export_extra", [])
+    require(isinstance(extras, list) and len(extras) <= 20, "Manifest export extras must be a list of at most 20 paths.")
+    seen_extras = set()
+    for raw in extras:
+        text = clean_relative(raw).as_posix()
+        require(text not in seen_extras and text not in seen, "Duplicate manifest export extra.")
+        seen_extras.add(text)
     return value
 
 
@@ -344,13 +351,24 @@ def select_home(path):
 
 def manifest_command(root, write):
     target = Path(os.path.abspath(root))
+    prior = {}
+    source = target / MANIFEST_NAME
+    if source.is_file() and source.stat().st_size <= 4 * 1024 * 1024:
+        try:
+            prior = json.loads(source.read_text(encoding="utf-8"))
+        except ValueError:
+            prior = {}
     manifest = package_manifest(target)
+    if isinstance(prior, dict) and prior.get("export_extra"):
+        manifest["export_extra"] = prior["export_extra"]
+    check_manifest(manifest)
     fingerprint = digest(packed(manifest))
     if write:
         require_mutation()
         record_state(target / MANIFEST_NAME, manifest)
     return {"path": str(target / MANIFEST_NAME), "written": bool(write), "version": manifest["version"],
-            "files": len(manifest["files"]), "sha256": fingerprint}
+            "files": len(manifest["files"]), "export_extra": manifest.get("export_extra", []),
+            "sha256": fingerprint}
 
 
 def inventory(path):
@@ -1729,12 +1747,18 @@ def git_identity(repo):
 
 def export_files(home):
     manifest = check_manifest(json.loads(home.path(MANIFEST_NAME).read_text(encoding="utf-8")))
-    return manifest, sorted({entry["path"] for entry in manifest["files"]} | {MANIFEST_NAME})
+    files = sorted({entry["path"] for entry in manifest["files"]} | {MANIFEST_NAME})
+    extras = sorted(clean_relative(path).as_posix() for path in manifest.get("export_extra", []))
+    return manifest, files, extras
 
 
-def export_fingerprint(target, files):
+def export_source(home, text):
+    return home.root.parent / text
+
+
+def export_fingerprint(target, files, extras=()):
     entries = []
-    for text in files:
+    for text in list(files) + list(extras):
         path = target / text
         require(path.is_file(), "Export is missing " + text)
         entries.append({"path": text, "sha256": hash_file(path)})
@@ -1764,7 +1788,7 @@ def git_export(home, destination):
     require(not target.is_relative_to(home.root), "The export must live outside the home.")
     require(local is None or (target != local and not target.is_relative_to(local)),
             "The export must not be the local repository.")
-    manifest, files = export_files(home)
+    manifest, files, extras = export_files(home)
     release = release_check(home)
     require(not release["failed"], "The package has release findings; fix them before exporting:"
             " " + ", ".join(entry["check"] for entry in release["findings"][:5]))
@@ -1792,12 +1816,25 @@ def git_export(home, destination):
         destination_path = target / text
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         install_bytes(destination_path, source.read_bytes())
-    fingerprint = export_fingerprint(target, files)
+    included = []
+    skipped = []
+    for text in extras:
+        source = export_source(home, text)
+        if not source.is_file():
+            skipped.append({"path": text, "reason": "not present beside the home"})
+            continue
+        destination_path = target / text
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        install_bytes(destination_path, source.read_bytes())
+        included.append(text)
+    fingerprint = export_fingerprint(target, files, included)
     record = {"schema": 1, "version": manifest["version"], "fingerprint": fingerprint,
-              "files": files, "exported_at": stamp()}
+              "files": files, "extras": [{"path": text, "sha256": hash_file(target / text)} for text in included],
+              "exported_at": stamp()}
     install_bytes(target / EXPORT_STATE, (json.dumps(record, indent=1, sort_keys=True) + "\n").encode())
     return {"destination": target.as_posix(), "version": manifest["version"], "files": len(files),
-            "fingerprint": fingerprint, "record": EXPORT_STATE}
+            "fingerprint": fingerprint, "record": EXPORT_STATE,
+            "extras": included, "extras_skipped": skipped}
 
 
 def git_verify(home, destination):
@@ -1809,7 +1846,9 @@ def git_verify(home, destination):
     require((target / EXPORT_STATE).stat().st_size <= 1024 * 1024, "Export record is oversized.")
     record = json.loads((target / EXPORT_STATE).read_text(encoding="utf-8"))
     require(isinstance(record, dict) and record.get("schema") == 1, "Unsupported export record.")
-    _, files = export_files(home)
+    _, files, extras = export_files(home)
+    recorded = {entry["path"]: entry["sha256"] for entry in record.get("extras", [])
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str)}
     findings = []
     for text in files:
         path = target / text
@@ -1818,7 +1857,23 @@ def git_verify(home, destination):
             findings.append({"path": text, "problem": "missing"})
         elif not source.is_file() or hash_file(path) != hash_file(source):
             findings.append({"path": text, "problem": "differs"})
-    allowed = set(files) | {EXPORT_STATE}
+    for text in extras:
+        path = target / text
+        expected = recorded.get(text)
+        if expected is None:
+            if path.is_file():
+                findings.append({"path": text, "problem": "unrecorded-extra"})
+            continue
+        if not path.is_file():
+            findings.append({"path": text, "problem": "missing-extra"})
+            continue
+        if hash_file(path) != expected:
+            findings.append({"path": text, "problem": "differs"})
+            continue
+        source = export_source(home, text)
+        if source.is_file() and hash_file(source) != expected:
+            findings.append({"path": text, "problem": "source-differs"})
+    allowed = set(files) | set(extras) | {EXPORT_STATE}
     for item in sorted(target.rglob("*")):
         relative = item.relative_to(target).as_posix()
         if relative.split("/")[0] == ".git" or relative in allowed:
@@ -1826,14 +1881,15 @@ def git_verify(home, destination):
         if item.is_file():
             findings.append({"path": relative, "problem": "extra"})
     present = [text for text in files if (target / text).is_file()]
-    fingerprint = export_fingerprint(target, present) if len(present) == len(files) else None
+    extras_present = [text for text in extras if text in recorded and (target / text).is_file()]
+    fingerprint = export_fingerprint(target, present, extras_present) if len(present) == len(files) else None
     release = release_check(Home(target))
     findings.extend({"path": entry["path"], "problem": "release-" + entry["check"]} for entry in release["findings"])
     findings.extend({"path": entry["path"], "problem": "audit-" + entry["kind"]}
                     for entry in audit(home, target)["findings"])
     passed = bool(fingerprint) and not findings and fingerprint == record.get("fingerprint")
     return {"passed": passed, "fingerprint": fingerprint, "recorded": record.get("fingerprint"),
-            "files": len(files), "findings": findings[:50]}
+            "files": len(files), "extras": len(extras), "findings": findings[:50]}
 
 
 def git_checkpoint(home, paths, message, include_ignored=False):
@@ -1875,8 +1931,11 @@ def git_publish(home, destination, confirm, message=None):
     if existing is None:
         git_command(target, "init")
     identity = git_identity(target)
-    _, files = export_files(home)
-    git_command(target, *identity, "add", "--", *files, EXPORT_STATE)
+    _, files, extras = export_files(home)
+    exported = [entry["path"] for entry in json.loads((target / EXPORT_STATE).read_text(encoding="utf-8")).get("extras", [])
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
+    staged_extras = [text for text in extras if text in exported and (target / text).is_file()]
+    git_command(target, *identity, "add", "--", *files, *staged_extras, EXPORT_STATE)
     if not git_command(target, "status", "--porcelain", check=False).stdout.strip():
         return {"committed": None, "message": "Nothing new to publish.", "pushed": False}
     text = (message or "vhd export " + stamp()).strip()

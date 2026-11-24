@@ -88,6 +88,19 @@ python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/
 
 0.6.0 also left the previous package manifest in place after an update; 0.7.0 installs it. Upgrades from 0.7.0 onward need no workaround.
 
+## Deferred: on-demand release updates
+
+Not implemented in 0.7.1. Automatic update checks are deliberately absent: the tool makes no network request, and a package arrives only when the user brings it.
+
+Planned for 0.8.0, reusing the existing engine:
+
+1. Check: an explicit command asks the project release list for the newest version, prints version, notes link, asset name and digest, and writes nothing.
+2. Update: on the user's request, download the release ZIP and its detached digest into a temporary folder outside the home, verify the digest, then run the existing `upgrade --zip` plan. The same plan, fingerprint, snapshot and batch lock apply unchanged.
+3. Rollback: list the snapshots recorded by the applied batch and offer the existing `plan restore` for one file or the whole batch. No new recovery path is introduced.
+4. Offline default: the check is opt-in, refuses without a configured source, and reports an unavailable network as a skipped check, never as an error in the home.
+
+Open questions before implementation: which release host and API shape to trust, whether a signature should replace a checksum, and how a home without Git records the applied version. A migration listed in the package keeps blocking the apply until the user handles it.
+
 ## Limits
 
 - Prose is never merged automatically.

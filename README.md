@@ -1,6 +1,6 @@
 # Virtual Home DIY
 
-Virtual Home DIY 0.7.0 is a Markdown workspace for your AI partner. Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
+Virtual Home DIY 0.7.1 is a Markdown workspace for your AI partner. Open this folder in an agent application with local file access and say “Use Swiss Knife to read START_HERE.md, set up this home and start as Vee.” [Copyable instructions](sysprompt_to_copy.txt) work when the app needs an explicit prompt. The [quick tutorial](TUTORIAL.txt) includes a Cherry Studio example.
 
 ## Setup
 
@@ -75,7 +75,7 @@ Only tested behaviour is claimed. Python 3.13 or newer is required for the helpe
 
 ## Optional Git
 
-Smart Git is optional and VHD works without Git. `python TOOLS/vhd.py git` checkpoints the local repository, exports only the manifest allowlist into a separate public folder, verifies privacy and completeness, and publishes a local commit bound to the verified fingerprint. It never pushes, never forces, and never rewrites history. See [tools](TOOLS/README.md#smart-git).
+Smart Git is optional and VHD works without Git. `python TOOLS/vhd.py git` checkpoints the local repository, exports only the manifest allowlist into a separate public folder, verifies privacy and completeness, and publishes a local commit bound to the verified fingerprint. It never pushes, never forces, and never rewrites history. The export also carries `SOURCE.json`, a small record of the exported paths, their hashes and the export fingerprint. That file belongs to the export, not to the package, so a release ZIP never contains it. See [tools](TOOLS/README.md#smart-git).
 
 ## Artwork, licensing, and support
 

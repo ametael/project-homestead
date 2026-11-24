@@ -1,6 +1,13 @@
 {
- "exported_at": "2026-11-24T11:08:11.488614+00:00",
+ "exported_at": "2026-11-24T11:52:19.115719+00:00",
+ "extras": [
+  {
+   "path": "tests/test_vhd.py",
+   "sha256": "3601507a6552cbdeaa92e068ab156592b453fb0ea154d452bdedff51f10c7198"
+  }
+ ],
  "files": [
+  ".gitattributes",
   ".gitignore",
   "AGENTS.md",
   "CHANGELOG.md",
@@ -53,7 +60,7 @@
   "VERIFICATION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "f01bbd8fc3b5843893f1d074283c565dfdd15850599ee237345c999b3d904c55",
+ "fingerprint": "6afe3de2daf3d568d1f89ab55652bd3e0461e8108ead8d083bbb036794c5f7ba",
  "schema": 1,
- "version": "0.7.0"
+ "version": "0.7.1"
 }

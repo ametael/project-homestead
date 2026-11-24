@@ -2,6 +2,15 @@
 
 One line per change. Newest version first.
 
+## 0.7.1
+
+- `.gitattributes` with `* -text` keeps package bytes identical after a clone, so the manifest hashes survive Git on Windows and POSIX.
+- The sanitized test suite is published beside the package through `export_extra`, and stays outside the release allowlist.
+- `git export`, `verify` and `publish` copy, hash and stage those extra files; a changed test source now fails verification.
+- Top-level `tests/` is never treated as package content by the manifest, upgrade or audit scans.
+- `VERIFICATION.md` reports clean-package counts, and `README.md` explains `SOURCE.json`.
+- `UPDATE.md` records on-demand release update, check and rollback as a deferred 0.8.0 feature over the existing upgrade engine.
+
 ## 0.7.0
 
 - `vhd.py index` builds a derived content index in `MEMORY/CACHE/index.json` from UTF-8 text files, hashes only files whose size or timestamp moved, and reports a detected rename when a removed path and a new path share content.

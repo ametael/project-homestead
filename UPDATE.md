@@ -20,6 +20,26 @@ The archive is refused before any write when it contains an absolute or parent p
 
 A detached digest proves integrity, not who published the archive. A checksum that travels with an untrusted archive establishes nothing by itself, and no signature check exists yet, so say so plainly instead of calling an update authenticated.
 
+## Check for a newer release
+
+The package makes no network request, so either the user or the agent checks, then brings the archive.
+
+Chat only, no terminal. Send this to the agent:
+
+```
+Read UPDATE.md from my VHD home, then check https://api.github.com/repos/ametael/project-vhd/releases/latest and tell me the newest version and whether my home is older.
+```
+
+The reply carries `tag_name` as the version and an `assets` list with the ZIP and its `.sha256`. Compare that version with `version` in the home's `MANIFEST.json`. A host without network access reports that it cannot check, and the home stays untouched.
+
+With a terminal, in a temporary folder outside the home:
+
+1. `curl -sL https://api.github.com/repos/ametael/project-vhd/releases/latest` to read the version and asset names.
+2. Download the ZIP and the `.sha256` file beside it.
+3. Apply with `python TOOLS/vhd.py upgrade --zip PATH --sha256 PATH.sha256`, read the plan, then apply with its fingerprint.
+
+Check releases, not commits. A commit on `main` can be unfinished work, while a release carries a tag, a ZIP and a digest. The digest proves integrity, not who published the archive.
+
 ## Steps
 
 1. Find the home. Do not rely on the folder name, because the user may have renamed it.
@@ -88,14 +108,14 @@ python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/
 
 0.6.0 also left the previous package manifest in place after an update; 0.7.0 installs it. Upgrades from 0.7.0 onward need no workaround.
 
-## Deferred: on-demand release updates
+## Deferred: checks inside the tool
 
-Not implemented in 0.7.1. Automatic update checks are deliberately absent: the tool makes no network request, and a package arrives only when the user brings it.
+The check above is a documented procedure for the agent, not a command. The tool still makes no network request, and a package still arrives only when the user or the agent brings it.
 
-Planned for 0.8.0, reusing the existing engine:
+A `vhd.py update --check` and `--fetch` remain unimplemented:
 
-1. Check: an explicit command asks the project release list for the newest version, prints version, notes link, asset name and digest, and writes nothing.
-2. Update: on the user's request, download the release ZIP and its detached digest into a temporary folder outside the home, verify the digest, then run the existing `upgrade --zip` plan. The same plan, fingerprint, snapshot and batch lock apply unchanged.
+1. Check: an explicit command asks the release list for the newest version, prints version, notes link, asset name and digest, and writes nothing.
+2. Update: on request, download the release ZIP and digest into a temporary folder outside the home, verify the digest, then run the existing `upgrade --zip` plan. The same plan, fingerprint, snapshot and batch lock apply unchanged.
 3. Rollback: list the snapshots recorded by the applied batch and offer the existing `plan restore` for one file or the whole batch. No new recovery path is introduced.
 4. Offline default: the check is opt-in, refuses without a configured source, and reports an unavailable network as a skipped check, never as an error in the home.
 

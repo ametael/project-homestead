@@ -2,6 +2,11 @@
 
 One line per change a user can see. Evidence and counts live in [VERIFICATION.md](VERIFICATION.md). Newest version first.
 
+## 0.8.1
+
+- The user guide opens with a one-line setup for apps that have a terminal, and a short update procedure.
+- `UPDATE.md` gains a release check that works by chat alone or with a terminal, and discloses that the tool itself still makes no network request.
+
 ## 0.8.0
 
 - EXP scores only a capability, method or antipola not yet recorded; routine work, clean reapplications and environment friction score zero.

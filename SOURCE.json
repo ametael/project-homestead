@@ -1,5 +1,5 @@
 {
- "exported_at": "2026-11-25T10:15:46.488122+00:00",
+ "exported_at": "2026-11-25T10:39:25.794071+00:00",
  "extras": [
   {
    "path": "tests/test_vhd.py",
@@ -61,7 +61,7 @@
   "VISION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "02903a10613f968e9cd226a9b26f5a5660f1cc0ae2ee0f2b4a31f7a6e3851d3c",
+ "fingerprint": "3e8534d4c814c7b04fb904ff3608ede312c7a19850289d1b2800a38ba4b8d5da",
  "schema": 1,
- "version": "0.8.0"
+ "version": "0.8.1"
 }

@@ -1,6 +1,6 @@
 # Virtual Home DIY
 
-Virtual Home DIY 0.8.0 is a portable, local-first home for your existing AI assistant.
+Virtual Home DIY 0.8.1 is a portable, local-first home for your existing AI assistant.
 
 > **Change the model. Keep the identity. Continue the journey.**
 
@@ -37,13 +37,23 @@ See [What VHD is](VISION.md) for what belongs in the folder and who owns it.
 
 ## Setup
 
-Three steps, about two minutes.
+On an app that has a terminal, one line is enough:
+
+```
+Extract this zip into a folder I keep, then read START_HERE.md and set up the home.
+```
+
+Everything else, in three steps, about two minutes.
 
 1. **Extract the package** into a folder you keep, anywhere on your disk. Run it from that folder, not from inside the ZIP.
 2. **Open the folder as your agent's working folder** in an app with local file access, then paste [sysprompt_to_copy.txt](sysprompt_to_copy.txt) as the system prompt. The [quick tutorial](TUTORIAL.txt) walks through a Cherry Studio example.
 3. **Say what you want**: “Set up this home and start as Vee.” The agent creates the identity, memory, handoff and EXP files itself and introduces the persona. Then give it a task.
 
 That is the whole installation. The package ships the Vee starter persona and an empty memory, so nothing arrives with someone else's history already inside.
+
+### Updating an existing home
+
+Ask the agent to read [UPDATE.md](UPDATE.md) and check `https://api.github.com/repos/ametael/project-vhd/releases/latest`. It tells whether the home is older, then runs `python TOOLS/vhd.py upgrade --zip PATH --sha256 PATH.sha256` and shows the plan before anything is written. Identity, memory and projects are not replaced by an update.
 
 ### Rename or reshape the assistant
 

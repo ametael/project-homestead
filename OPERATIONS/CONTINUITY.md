@@ -7,6 +7,7 @@ For each meaningful milestone or interruption, carry out the applicable closeout
 1. Create a distinct [checkpoint](../TEMPLATES/PROGRESS.md) under the owning project's `PROGRESS/`. Record the last verified artifact, results and evidence, relevant decisions, and the next action. Use `UNKNOWN` for unavailable token readings, and record the reading type and time when present.
 2. Score a distinct verified contribution only if it qualifies under [Levelling](LEVELLING.md). Record the EXP delta once. An interruption, duplicate checkpoint or retry earns zero on its own.
 3. Verify checkpoint links. Use the [Swiss Knife](../TOOLS/README.md#writing-one-file) to snapshot and update the relevant handoffs, or follow [Files and Git](FILES_AND_GIT.md) when using native tools. Point the project handoff at the checkpoint. Keep the topic route in the owner handoff and, for shared work, the home handoff. The home handoff is a small routing table and one latest pointer.
+4. When the work is a tracked change rather than a personal note, record the line a user can see in `CHANGELOG.md`, put the checks actually run in `VERIFICATION.md`, and commit the finished files together. A personal note, a routine handoff and file tidying end at step 3.
 
 Keep prior checkpoints. Correct them with linked entries. Preserve private boundaries when routing evidence. Use one active writer for the same files and coordinate handoff before another session edits them.
 

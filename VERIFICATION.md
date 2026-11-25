@@ -1,6 +1,6 @@
-# VHD 0.7.1 verification
+# VHD 0.8.0 verification
 
-Verified on 24 November 2026 on Windows with Python 3.13.14. Counts below come from a clean package extraction, not a working home. Every addition is listed in [CHANGELOG.md](CHANGELOG.md).
+Verified on 25 November 2026 on Windows with Python 3.13.14. Counts below come from a clean package extraction, not a working home. Every addition is listed in [CHANGELOG.md](CHANGELOG.md).
 
 - **PASS** · 122 local tests: 102 from 0.6.0 unchanged, 13 for the content index, search and repair ladder, 2 for the upgrade manifest and a changed package document, and 5 for the published test suite, its hashes and the line-ending rule.
 - **PASS** · `.gitattributes` ships `* -text` and is part of the manifest, so a clone keeps the exact bytes the manifest records.
@@ -17,12 +17,12 @@ Verified on 24 November 2026 on Windows with Python 3.13.14. Counts below come f
 - **PASS** · `vhd.py heal`: a foreign lock produced `DEGRADED`, a recorded proposal and no lock change, a repeat record was deduplicated, and the next healthy run logged `restore_primary` with exit status 0.
 - **PASS** · `vhd.py heal`: two failed rebuilds stop at the attempt bound and leave `DEGRADED` with a proposal; no user file is written.
 - **PASS** · `vhd.py upgrade` on a real 0.6.0 archive: 10 stale and 2 new files, 12 written, 10 snapshots, package manifest installed, `restart_required` reported, and `release`, `links`, `routes`, `index`, `heal` and `search` clean afterwards.
-- **PASS** · `vhd.py release --project ..`: 8 checks, 51 manifest files, 0 findings.
-- **PASS** · `vhd.py links` on the clean package: 43 files, 110 references, 0 failed.
+- **PASS** · `vhd.py release --project ..`: 8 checks, 52 manifest files, 0 findings.
+- **PASS** · `vhd.py links` on the clean package: 44 files, 112 references, 0 failed.
 - **PASS** · `vhd.py routes`: 6 parts, 0 failed.
-- **PASS** · `vhd.py audit`: 51 shipped files, 0 findings, private markers read from the local configuration.
+- **PASS** · `vhd.py audit`: 52 shipped files, 0 findings, private markers read from the local configuration.
 - **PASS** · `vhd.py method check`: 0 cards, 0 findings.
-- **PASS** · `vhd.py doctor` on the clean package: 6 startup parts, 0 failed, 6,999 bytes.
+- **PASS** · `vhd.py doctor` on the clean package: 6 startup parts, 0 failed, 7,028 bytes.
 - **NOT RUN** · Linux and macOS mutation, including the POSIX no-overwrite branch on a real POSIX filesystem. That branch is exercised here through Windows hard links and exclusive directory creation, which is not proof of POSIX semantics.
 - **NOT RUN** · A file-only host running standard mode end to end without Python, including manual index and repair steps.
 - **NOT RUN** · A live agent session, a real user home, and a cross-host stale lock.

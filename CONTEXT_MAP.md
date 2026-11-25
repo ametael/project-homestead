@@ -11,7 +11,7 @@
 | Development or technical verification | [Development](OPERATIONS/DEVELOPMENT.md) and relevant project sources |
 | Writes, recovery or Git | [Files and Git](OPERATIONS/FILES_AND_GIT.md) |
 | Repair a broken index, cache or lock | [Recovery](OPERATIONS/RECOVERY.md) |
-| Checkpoint, interruption or resume | [Continuity](OPERATIONS/CONTINUITY.md) |
+| Checkpoint, interruption, resume, or finishing a tracked change | [Continuity](OPERATIONS/CONTINUITY.md) |
 | Optional runtime, queue or budget | [Runtime](OPERATIONS/RUNTIME.md) |
 | Local tool discovery, bounded reads, validation or stats | Applicable [optional tool](TOOLS/README.md) section |
 | Find a keyword or rebuild the content index | [Content index](TOOLS/README.md#content-index-and-search) and [recovery](OPERATIONS/RECOVERY.md) |

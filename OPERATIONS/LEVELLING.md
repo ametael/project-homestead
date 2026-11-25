@@ -6,10 +6,16 @@ Use the active or requested owner's `PROGRESSION/EXP.md` under their persona slo
 
 Record evidence in its owning project before recording EXP. Use one stable contribution ID per owner and contribution across retries, chats and hosts. Keep project, primary skill, title, earned date, verification, evidence link and total awarded EXP in the ledger.
 
+Score a completed contribution only when it introduces a capability, method or antipola not yet recorded, or the first application under materially different conditions.
+
 - **0** for routine work, retries, resume, reading or recording alone.
-- **1** for verified adaptation of an established method.
+- **0** for applying an already recorded method under the same conditions. A clean result is the expected outcome, not a missing score.
+- **0** for environment friction. A renamed path, a moved file or a host quirk is not a learned lesson once a workaround proves clean.
+- **1** for verified adaptation of an established method under materially different conditions.
 - **2** for a verified new method or capability.
-- **3** for a major verified milestone.
+- **3** for a major verified milestone, such as reusable work demonstrated across projects or hosts.
+
+Complexity alone never sets the score. A checklist or tool earns one milestone after its usefulness is verified.
 
 Before saving, look up the ID in the owner's current ledger. If it exists, keep one row and award zero on an equal or lower score. An increase needs fresh evidence, retains earlier evidence, and adds only the difference. Save under one active writer, reopen the ledger, and verify the row and total. A read-only agent reports the proposed row for the user to save. A checkpoint can record the EXP delta even when it is zero.
 

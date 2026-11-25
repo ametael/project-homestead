@@ -1,6 +1,6 @@
 # Virtual Home DIY
 
-Virtual Home DIY 0.7.1 is a portable, local-first home for your existing AI assistant.
+Virtual Home DIY 0.8.0 is a portable, local-first home for your existing AI assistant.
 
 > **Change the model. Keep the identity. Continue the journey.**
 
@@ -25,6 +25,8 @@ VHD is not another chatbot and it is not an inference engine. It is a folder of 
 ## Why VHD is different
 
 A built-in memory feature belongs to one provider, and a new model usually starts with no reliable picture of the person it works with. In VHD the agent adapts to the established home, its procedures and its accumulated knowledge instead of rebuilding a working identity for each provider. Knowledge cards record what was proven, what failed and what replaced it, so recorded experience stays separate from whatever the model was trained on.
+
+See [What VHD is](VISION.md) for what belongs in the folder and who owns it.
 
 ## Who is VHD for?
 

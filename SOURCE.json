@@ -1,5 +1,5 @@
 {
- "exported_at": "2026-11-24T16:46:25.799896+00:00",
+ "exported_at": "2026-11-25T10:15:46.488122+00:00",
  "extras": [
   {
    "path": "tests/test_vhd.py",
@@ -58,9 +58,10 @@
   "TUTORIAL.txt",
   "UPDATE.md",
   "VERIFICATION.md",
+  "VISION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "cf08ebc18378af22b56ec0f59acd8578ac63e76f26a8b4b63077080dca947059",
+ "fingerprint": "02903a10613f968e9cd226a9b26f5a5660f1cc0ae2ee0f2b4a31f7a6e3851d3c",
  "schema": 1,
- "version": "0.7.1"
+ "version": "0.8.0"
 }

@@ -1,6 +1,16 @@
 # Changelog
 
-One line per change. Newest version first.
+One line per change a user can see. Evidence and counts live in [VERIFICATION.md](VERIFICATION.md). Newest version first.
+
+## 0.8.0
+
+- EXP scores only a capability, method or antipola not yet recorded; routine work, clean reapplications and environment friction score zero.
+- Closeout of a tracked change records the user-visible changelog line and the checks actually run before the commit.
+
+## 0.7.2
+
+- Adds `VISION.md`, a short page on what the folder holds and who owns it.
+- Links that page from the user guide and from the project README.
 
 ## 0.7.1
 

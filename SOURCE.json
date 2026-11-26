@@ -1,9 +1,9 @@
 {
- "exported_at": "2026-11-25T10:39:25.794071+00:00",
+ "exported_at": "2026-11-26T11:24:52.745584+00:00",
  "extras": [
   {
-   "path": "tests/test_vhd.py",
-   "sha256": "3601507a6552cbdeaa92e068ab156592b453fb0ea154d452bdedff51f10c7198"
+   "path": "tests/test_homestead.py",
+   "sha256": "03a6fb26538132b96a617e6a05430f1e3fc8b3d14e2ff80c541f5e59a705ead6"
   }
  ],
  "files": [
@@ -18,17 +18,23 @@
   "KNOWLEDGE/INDEX.md",
   "LICENSE",
   "MANIFEST.json",
+  "OPERATIONS/CASHBOOK.md",
   "OPERATIONS/CONTEXT.md",
   "OPERATIONS/CONTINUITY.md",
   "OPERATIONS/DEVELOPMENT.md",
   "OPERATIONS/FILES_AND_GIT.md",
+  "OPERATIONS/GUARDIAN.md",
   "OPERATIONS/INDEX.md",
   "OPERATIONS/KNOWLEDGE.md",
+  "OPERATIONS/KNOWLEDGEBANK.md",
   "OPERATIONS/LEVELLING.md",
   "OPERATIONS/MEMORY.md",
   "OPERATIONS/PERSONAS.md",
+  "OPERATIONS/PROVIDERS.md",
+  "OPERATIONS/REASONING.md",
   "OPERATIONS/RECOVERY.md",
   "OPERATIONS/RUNTIME.md",
+  "OPERATIONS/SOURCES.md",
   "README.md",
   "ROUTES.json",
   "START_HERE.md",
@@ -54,14 +60,19 @@
   "TEMPLATES/RECOVERY.json",
   "TEMPLATES/VOICE.md",
   "TOOLS/README.md",
-  "TOOLS/vhd.py",
+  "TOOLS/homestead.py",
+  "TOOLS/homestead_cashbook.py",
+  "TOOLS/homestead_knowledge.py",
+  "TOOLS/homestead_portable.py",
+  "TOOLS/homestead_provider.py",
+  "TOOLS/homestead_workflow.py",
   "TUTORIAL.txt",
   "UPDATE.md",
   "VERIFICATION.md",
   "VISION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "3e8534d4c814c7b04fb904ff3608ede312c7a19850289d1b2800a38ba4b8d5da",
+ "fingerprint": "a2482e24e0ea56c42de9f9f676142942e376d5bac4a102009ef078e3fc6a1337",
  "schema": 1,
- "version": "0.8.1"
+ "version": "1.0.0"
 }

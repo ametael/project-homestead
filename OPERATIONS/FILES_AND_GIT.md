@@ -17,3 +17,5 @@ The helper cannot intercept arbitrary editor/terminal actions. Follow host restr
 Git is optional. Check scoped status, preserve existing staging, stage exact intended files, honor hooks, and make one coherent commit when authorized. Do not initialize a project repository, push, amend, reset, rewrite history, or include private runtime data automatically. A commit does not cover ignored files.
 
 At closeout update [continuity](CONTINUITY.md) before committing. Backups, checkpoints, and handoffs stay local unless the user authorizes sharing.
+
+Run the reference and route checks before writing, not only after, so a broken link is found while the change is still cheap to adjust. When a repeated text edit fails on the same content, change the matching method or the tool instead of repeating it.

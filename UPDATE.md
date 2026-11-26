@@ -1,10 +1,10 @@
 # Updating this home
 
-Read this when the user hands you a newer VHD package, a zip, or says "update this home". The package keeps identity, memory and projects. It only compares and replaces package files.
+Read this when the user hands you a newer Homestead package, a zip, or says "update this home". The package keeps identity, memory and projects. It only compares and replaces package files.
 
 ## What the tool does
 
-`python TOOLS/vhd.py upgrade --zip PATH` or `--package PATH` compares three states:
+`python TOOLS/homestead.py upgrade --zip PATH` or `--package PATH` compares three states:
 
 - the manifest stored in `HOME_STATE.json`, which is what this home was installed with
 - the files actually present in this home
@@ -13,6 +13,17 @@ Read this when the user hands you a newer VHD package, a zip, or says "update th
 It prints a plan and writes nothing. `--apply --confirm FINGERPRINT` performs the safe part. The fingerprint comes from the dry run, so a plan that changed after the user read it cannot be applied. The package `MANIFEST.json` is installed with the files and reported as `manifest_updated`, so a later `release` check describes the package that is actually installed.
 
 `--zip PATH` accepts the release archive directly. The tool validates every entry, extracts it into a temporary stage beside the archive, compares, and removes the stage afterwards. Add `--sha256 PATH` with a detached digest file to verify the archive bytes before extraction.
+
+## A home installed under the old folder name
+
+Homes installed before 1.0.0 keep their files in a folder named `VHD/` and run `TOOLS/vhd.py`. Nothing in the upgrade moves or renames that folder. To update one:
+
+1. Extract the new package anywhere outside the home.
+2. Run the new helper against the old folder by path: `python PATH/TO/HOMESTEAD/TOOLS/homestead.py --home PATH/TO/VHD upgrade --package PATH/TO/HOMESTEAD`.
+3. Read the plan. It reports `TOOLS/vhd.py` under `legacy` as superseded by `TOOLS/homestead.py`.
+4. Apply with the fingerprint from the plan.
+5. Recycle `TOOLS/vhd.py` yourself after the update works. The tool never deletes it.
+6. Renaming the folder to `HOMESTEAD` is optional. Detection reads the files, not the folder name, so a renamed folder keeps working. Rename only after a verified update, and back up first.
 
 ## Archive safety
 
@@ -27,7 +38,7 @@ The package makes no network request, so either the user or the agent checks, th
 Chat only, no terminal. Send this to the agent:
 
 ```
-Read UPDATE.md from my VHD home, then check https://api.github.com/repos/ametael/project-vhd/releases/latest and tell me the newest version and whether my home is older.
+Read UPDATE.md from my Homestead home, then check https://api.github.com/repos/ametael/project-vhd/releases/latest and tell me the newest version and whether my home is older.
 ```
 
 The reply carries `tag_name` as the version and an `assets` list with the ZIP and its `.sha256`. Compare that version with `version` in the home's `MANIFEST.json`. A host without network access reports that it cannot check, and the home stays untouched.
@@ -36,7 +47,7 @@ With a terminal, in a temporary folder outside the home:
 
 1. `curl -sL https://api.github.com/repos/ametael/project-vhd/releases/latest` to read the version and asset names.
 2. Download the ZIP and the `.sha256` file beside it.
-3. Apply with `python TOOLS/vhd.py upgrade --zip PATH --sha256 PATH.sha256`, read the plan, then apply with its fingerprint.
+3. Apply with `python TOOLS/homestead.py upgrade --zip PATH --sha256 PATH.sha256`, read the plan, then apply with its fingerprint.
 
 Check releases, not commits. A commit on `main` can be unfinished work, while a release carries a tag, a ZIP and a digest. The digest proves integrity, not who published the archive.
 
@@ -44,7 +55,7 @@ Check releases, not commits. A commit on `main` can be unfinished work, while a 
 
 1. Find the home. Do not rely on the folder name, because the user may have renamed it.
    - If the user gave a path, use it.
-   - Otherwise run `python TOOLS/vhd.py detect --path PATH` and use the single highest score.
+   - Otherwise run `python TOOLS/homestead.py detect --path PATH` and use the single highest score.
    - On a tie or zero, show the top two candidates with their matched markers and ask. Never guess.
    - A folder with `MANIFEST.json` and no `HOME_STATE.json` is a package, not a home.
 2. Pass the archive with `--zip`, or extract it into a temporary folder beside the package, never inside the home, and pass that folder to `--package`.
@@ -52,11 +63,11 @@ Check releases, not commits. A commit on `main` can be unfinished work, while a 
 4. Tell the user in short plain sentences what will change, how many files, and what stays untouched. Ask before writing.
 5. Apply with the fingerprint from that exact dry run.
 6. Report the written files, whether the tool was replaced, and whether the copied system prompt is now stale.
-7. Run `python TOOLS/vhd.py links` and `python TOOLS/vhd.py routes`. Both must pass.
+7. Run `python TOOLS/homestead.py links` and `python TOOLS/homestead.py routes`. Both must pass.
 
 A batch-level lock covers the whole apply, so two upgrades cannot interleave. Before the first write the tool records `.recycle/pending-upgrade.json`, and it removes that record only after the state file is verified. A crash in between leaves the record behind; the next dry run reports it under `interrupted`, and re-running the same package completes the batch because files that already match the package are classed `applied`.
 
-If an operation was interrupted, inspect the lock with `python TOOLS/vhd.py lock`. `python TOOLS/vhd.py lock --recover` quarantines a confirmed stale lock into `.recycle/locks/` with a record. A foreign host, a legacy record, a missing birth mark or a reused PID stays `unknown` and is refused. Age alone never proves staleness.
+If an operation was interrupted, inspect the lock with `python TOOLS/homestead.py lock`. `python TOOLS/homestead.py lock --recover` quarantines a confirmed stale lock into `.recycle/locks/` with a record. A foreign host, a legacy record, a missing birth mark or a reused PID stays `unknown` and is refused. Age alone never proves staleness.
 
 ## Classes
 
@@ -91,7 +102,7 @@ Without `HOME_STATE.json` there is no baseline, so no local edit can be told apa
 
 ## After the update
 
-- `restart_required` means `TOOLS/vhd.py` changed. Start a new command before relying on the new behaviour.
+- `restart_required` means `TOOLS/homestead.py` changed. Start a new command before relying on the new behaviour.
 - `manifest_updated` means the package manifest was replaced. `release` compares against it afterwards.
 - `host_prompt_stale` means `sysprompt_to_copy.txt` changed. A system prompt already pasted into an application is outside this folder. Show the new text and ask the user to replace it.
 - Snapshots of replaced files are listed in the result and can be restored with `vhd.py plan restore --id ID`.
@@ -102,8 +113,8 @@ Without `HOME_STATE.json` there is no baseline, so no local edit can be told apa
 0.6.0 snapshots a changed file only when it is a named core document or sits under a core folder, so a changed `CHANGELOG.md` stops its own apply. Run the newer tool against the older home instead of the home's current tool:
 
 ```text
-python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/VHD_0.7.0.zip --sha256 PATH/TO/VHD_0.7.0.zip.sha256
-python PATH/TO/VHD_0.7.0/TOOLS/vhd.py --home PATH/TO/HOME upgrade --zip PATH/TO/VHD_0.7.0.zip --apply --confirm FINGERPRINT
+python PATH/TO/HOMESTEAD_1.0.0/TOOLS/homestead.py --home PATH/TO/HOME upgrade --zip PATH/TO/HOMESTEAD_1.0.0.zip --sha256 PATH/TO/HOMESTEAD_1.0.0.zip.sha256
+python PATH/TO/HOMESTEAD_1.0.0/TOOLS/homestead.py --home PATH/TO/HOME upgrade --zip PATH/TO/HOMESTEAD_1.0.0.zip --apply --confirm FINGERPRINT
 ```
 
 0.6.0 also left the previous package manifest in place after an update; 0.7.0 installs it. Upgrades from 0.7.0 onward need no workaround.

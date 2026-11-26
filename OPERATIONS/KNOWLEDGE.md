@@ -16,6 +16,21 @@ Recording a failure earns no EXP on its own. The verified replacement earns unde
 
 An owner can record a method as `referenced` in its [experience record](../TEMPLATES/EXPERIENCE.md). It becomes `applied` when linked to an actual verified milestone for that owner. Record pointers and applicability; leave the method itself in the shared catalog. Referring to or sharing knowledge earns zero EXP. A distinct verified outcome may earn EXP under [Levelling](LEVELLING.md).
 
+## Choosing between methods
+
+When more than one card could apply, compare them in this order: applicability to the actual task, quality of the verification evidence, compatibility with the current environment, reliability across repeated use, cost of execution, and known limits. Take the first card that is clearly better; do not average the criteria into a score.
+
+A lookup is conditional. A clear, small task proceeds without retrieval, and a task that repeats a recorded failure starts from that card instead of a successful one.
+
+## Sources and duplicates
+
+Reference material from outside the home follows [sources and access](SOURCES.md) before any card is written. Two rules keep the catalog honest:
+
+- One entry per source, keyed by the canonical URL: drop tracking parameters, drop a leading `www.`, drop a standard port, keep a non-standard port. A refetch updates that entry instead of adding a second row.
+- A blocked source is recorded per URL, not per domain. A single bad page raises its domain to warn, and a good page from the same domain is still usable.
+
+A card may carry one verdict and the date it was judged. The verdict belongs to the URL it came from, so a later page from the same site is judged on its own.
+
 ## Validation and retrieval
 
 Run `python TOOLS/vhd.py method check` before trusting or adding a card. It reports a missing ID, a duplicate ID, an invalid status, a missing required field, a `fail.` ID without a replacement, and a `SUPERSEDED` card without a target. Read one card with `python TOOLS/vhd.py method show ID`. Both commands are read-only and resolve the local `MEMORY/KNOWLEDGE/` first, then the shipped catalog.

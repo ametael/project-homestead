@@ -1,4 +1,5 @@
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import errno
@@ -20,7 +21,7 @@ from urllib.parse import unquote
 import uuid
 import zipfile
 
-VERSION = "0.8.1"
+VERSION = "1.0.0"
 LIMIT_FILES = 10000
 LIMIT_BYTES = 512 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024
@@ -42,7 +43,10 @@ INDEX_NAME = "MEMORY/CACHE/index.json"
 HEALTH_NAME = "MEMORY/CACHE/health.json"
 HEAL_LOG_NAME = "MEMORY/CACHE/selfheal.jsonl"
 INDEX_SCHEMA = 1
-INDEX_RULES = "index-1"
+INDEX_RULES = "index-2"
+GUARDIAN_STATE = ".recycle/guardian.json"
+GUARDIAN_IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".gif": "image/gif", ".webp": "image/webp"}
 INDEX_SUFFIXES = {".md", ".json", ".txt", ".py", ".cfg", ".ini", ".toml", ".yml", ".yaml",
                   ".csv", ".html", ".css", ".js", ".ps1", ".cmd", ".sh"}
 INDEX_EXCLUDED_PARTS = {"archive", ".recycle", ".git", "__pycache__"}
@@ -59,6 +63,12 @@ EVENT_HOOK = None
 
 class SafetyError(Exception):
     pass
+
+
+class GuardianDenied(SafetyError):
+    def __init__(self, result):
+        super().__init__(result["reason"])
+        self.result = result
 
 
 def require(condition, message):
@@ -285,10 +295,12 @@ def home_markers(path):
     path = Path(path)
     score = 0
     matched = []
+    tool = (path / "TOOLS" / "homestead.py").exists() or (path / "TOOLS" / "vhd.py").exists()
     for name, weight, label in (("HOME_STATE.json", 3, "state"), ("START_HERE.md", 2, "start"),
-                                ("PERSONA", 2, "persona"), ("TOOLS/vhd.py", 2, "tool"),
+                                ("PERSONA", 2, "persona"), ("TOOLS/homestead.py", 2, "tool"),
                                 ("OPERATIONS", 1, "operations"), ("TEMPLATES", 1, "templates")):
-        if (path / name).exists():
+        present = tool if name == "TOOLS/homestead.py" else (path / name).exists()
+        if present:
             score += weight
             matched.append(label)
     if (path / MANIFEST_NAME).is_file() and not (path / STATE_NAME).is_file():
@@ -341,10 +353,10 @@ def select_home(path):
     if score >= 8 and (selected / "START_HERE.md").is_file():
         return {"path": str(selected.resolve()), "score": score, "markers": matched, "source": "direct"}
     candidates = find_homes(selected, 3)
-    require(candidates, "No VHD home found near the given path.")
+    require(candidates, "No Homestead home found near the given path.")
     top = candidates[0]
     tied = [entry for entry in candidates if entry["score"] == top["score"]]
-    require(len(tied) == 1, "Ambiguous VHD home: " + " | ".join(
+    require(len(tied) == 1, "Ambiguous Homestead home: " + " | ".join(
         f"{entry['path']} ({entry['score']}: {','.join(entry['markers'])})" for entry in tied[:2]))
     return {**top, "source": "scan"}
 
@@ -532,16 +544,16 @@ class Home:
         require(not str(absolute).startswith("\\\\"), "Network homes are not supported.")
         check_chain(absolute)
         self.root = absolute.resolve(strict=True)
-        require(self.root != Path(self.root.anchor), "A filesystem root cannot be a VHD home.")
+        require(self.root != Path(self.root.anchor), "A filesystem root cannot be a Homestead home.")
         for name in ("START_HERE.md", "CONTEXT_MAP.md", "TEMPLATES/IDENTITY.md"):
-            require(self.path(name).is_file(), "Not a complete VHD home.")
+            require(self.path(name).is_file(), "Not a complete Homestead home.")
 
     def path(self, raw, exists=False):
         relative = clean_relative(raw)
         require(all(p.casefold() != ".git" for p in relative.parts), "Git metadata is protected.")
         target = self.root / relative
         check_chain(target)
-        require(target.resolve(strict=False).is_relative_to(self.root), "Path is outside the VHD home.")
+        require(target.resolve(strict=False).is_relative_to(self.root), "Path is outside the Homestead home.")
         if exists:
             require(target.exists(), "Selected path does not exist.")
         return target
@@ -807,7 +819,7 @@ class Home:
         return {"records": sorted(rows, key=lambda r: r["created"], reverse=True)[:limit]}
 
 
-def inspect(home, raw, sha=False, links=False):
+def inspect(home, raw, sha=False, links=False, *, guarded=False, purpose=None):
     path = home.path(raw, exists=True)
     s = check_node(path)
     result = {"path": clean_relative(raw).as_posix(), "kind": "directory" if path.is_dir() else "file",
@@ -817,7 +829,11 @@ def inspect(home, raw, sha=False, links=False):
     if links:
         require(path.is_file() and path.suffix.lower() == ".md" and s.st_size <= 1024 * 1024,
                 "Link inspection needs a Markdown file of at most 1 MiB.")
-        text = path.read_text(encoding="utf-8")
+        if guarded:
+            data, _ = guardian_bytes(home, raw, purpose, 1024 * 1024)
+            text = data.decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
         found = []
         for link in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text):
             link = link.strip("<>").split("#", 1)[0]
@@ -835,6 +851,124 @@ def inspect(home, raw, sha=False, links=False):
     return result
 
 
+def guardian_path(home, raw):
+    relative = clean_relative(raw)
+    parts = [part.casefold() for part in relative.parts]
+    require(not set(parts) & {".recycle", "archive", ".git", "__pycache__"}
+            and parts[:2] not in (["memory", "cache"], ["memory", "runtime"])
+            and not any(part == ".env" or part.startswith(".env.") for part in parts),
+            "Guardian keeps credentials, recovery files and internal caches outside model reads.")
+    path = home.path(raw, exists=True)
+    require(path.is_file(), "Guardian needs an exact file.")
+    return relative, path
+
+
+def guardian_public_hash(home, relative):
+    if relative.parts[0].upper() in USER_ROOTS:
+        return None
+    if not hasattr(home, "_guardian_public"):
+        home._guardian_public = {}
+        manifest = home.path(MANIFEST_NAME)
+        if manifest.is_file() and manifest.stat().st_size <= 4 * 1024 * 1024:
+            try:
+                entries = check_manifest(json.loads(manifest.read_text(encoding="utf-8")))["files"]
+                home._guardian_public = {entry["path"]: entry["sha256"] for entry in entries
+                                         if entry["kind"] != "user"}
+            except (ValueError, SafetyError):
+                pass
+    return home._guardian_public.get(relative.as_posix())
+
+
+def guardian_state(home):
+    path = home.path(GUARDIAN_STATE)
+    if not path.exists():
+        return {"schema": 1, "skip_extra_confirmation": False, "decisions": {}}
+    require(path.is_file() and path.stat().st_size <= TEXT_LIMIT, "Guardian state is unavailable.")
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object)
+    require(isinstance(value, dict) and value.get("schema") == 1
+            and type(value.get("skip_extra_confirmation")) is bool
+            and isinstance(value.get("decisions"), dict), "Guardian state is invalid.")
+    return value
+
+
+def guardian_key(relative, purpose):
+    require(isinstance(purpose, str) and 1 <= len(purpose.strip()) <= 160
+            and purpose == purpose.strip() and all(char.isprintable() for char in purpose),
+            "Provide the stated purpose as one line of 1 to 160 characters.")
+    path = relative.as_posix()
+    return digest(packed([path.casefold() if os.name == "nt" else path, purpose]))
+
+
+def guardian_check(home, relative, sha, purpose):
+    if guardian_public_hash(home, relative) == sha:
+        return
+    state = guardian_state(home)
+    record = state["decisions"].get(guardian_key(relative, purpose)) if purpose else None
+    decision = record.get("decision") if isinstance(record, dict) else None
+    if decision == "allow" and record.get("sha256") != sha:
+        decision = None
+    if decision == "allow":
+        return
+    ask = not state["skip_extra_confirmation"] and decision != "deny"
+    raise GuardianDenied({"status": "CONSENT_REQUIRED" if ask else "DENIED",
+                          "path": relative.as_posix(), "purpose": purpose,
+                          "reason": "Owner permission is required for this file and purpose."})
+
+
+def guardian_command(home, action, raw=None, purpose=None, setting=None):
+    if action == "status":
+        state = guardian_state(home)
+        return {"skip_extra_confirmation": state["skip_extra_confirmation"], "default_access": "denied"}
+    require(sys.stdin.isatty() and sys.stderr.isatty(),
+            "The owner must change Guardian settings or decisions in a local interactive terminal.")
+    if action == "forget":
+        key = guardian_key(clean_relative(raw), purpose)
+    if action == "authorize":
+        relative, path = guardian_path(home, raw)
+        key = guardian_key(relative, purpose)
+        sha = hash_file(path)
+        print(f"Allow the model to read {relative.as_posix()!r} for {purpose!r}? "
+              "Respect the creator's terms. Type yes or no.", file=sys.stderr, flush=True)
+        answer = sys.stdin.readline().strip().casefold()
+        require(answer in {"yes", "no"}, "No decision was recorded.")
+        decision = "allow" if answer == "yes" else "deny"
+    with home.lock():
+        state = guardian_state(home)
+        if action == "mode":
+            state["skip_extra_confirmation"] = setting == "true"
+            result = {"skip_extra_confirmation": state["skip_extra_confirmation"]}
+        elif action == "forget":
+            result = {"forgotten": state["decisions"].pop(key, None) is not None}
+        else:
+            require(hash_file(home.path(raw, exists=True)) == sha, "File changed. Review it before deciding again.")
+            state["decisions"][key] = {"sha256": sha, "decision": decision}
+            result = {"decision": decision, "path": relative.as_posix(), "purpose": purpose}
+        require(len(packed(state)) < TEXT_LIMIT, "Guardian state is full; remove an old decision first.")
+        record_state(home.path(GUARDIAN_STATE), state)
+    return result
+
+
+def guardian_bytes(home, raw, purpose, limit):
+    relative, path = guardian_path(home, raw)
+    require(path.stat().st_size <= limit, "File exceeds the guarded output limit.")
+    sha = hash_file(path)
+    guardian_check(home, relative, sha, purpose)
+    with path.open("rb") as source:
+        data = source.read(limit + 1)
+    require(len(data) <= limit, "File exceeds the guarded output limit.")
+    require(digest(data) == sha, "File changed after Guardian checked it.")
+    return data, sha
+
+
+def guardian_attachment(home, raw, purpose):
+    relative = clean_relative(raw)
+    media_type = GUARDIAN_IMAGE_TYPES.get(relative.suffix.lower())
+    require(media_type is not None, "Choose a PNG, JPEG, GIF or WebP image.")
+    data, sha = guardian_bytes(home, raw, purpose, 2 * 1024 * 1024)
+    return {"path": relative.as_posix(), "sha256": sha, "media_type": media_type,
+            "encoding": "base64", "data": base64.b64encode(data).decode("ascii")}
+
+
 def read_text_source(home, raw):
     path = home.path(raw, exists=True)
     require(path.is_file(), "Select a regular text file.")
@@ -844,9 +978,13 @@ def read_text_source(home, raw):
     return data.decode("utf-8-sig"), digest(data)
 
 
-def read_page(home, raw, offset, length, expected_sha):
+def read_page(home, raw, offset, length, expected_sha, *, guarded=False, purpose=None):
     require(1 <= length <= PAGE_LIMIT, "Page length must be 1 to 4096 characters.")
-    text, sha = read_text_source(home, raw)
+    if guarded:
+        data, sha = guardian_bytes(home, raw, purpose, TEXT_LIMIT)
+        text = data.decode("utf-8-sig")
+    else:
+        text, sha = read_text_source(home, raw)
     require(0 <= offset <= len(text), "Offset is outside the source.")
     require(offset == 0 or expected_sha is not None, "A resumed page needs the previous SHA-256.")
     require(expected_sha is None or expected_sha == sha, "Source changed. Start again at offset 0.")
@@ -969,25 +1107,31 @@ def level_card(xp):
     return {"xp": xp, "level": level, "next_level_xp": next_xp if level < 255 else None}
 
 
-def progression(home, raw, contribution_id=None, award=None):
+def progression(home, raw, contribution_id=None, award=None, *, purpose=None, guarded=False):
     parts = clean_relative(raw).parts
     require(parts[-2:] == ("PROGRESSION", "EXP.md") and
             ((parts[0] == "PERSONA" and len(parts) in (3, 4)) or parts == ("MEMORY", "USER", *parts[-2:])),
             "Select the requested owner's PROGRESSION/EXP.md.")
-    text, sha = read_text_source(home, raw)
+    if guarded:
+        data, sha = guardian_bytes(home, raw, purpose, TEXT_LIMIT)
+        text = data.decode("utf-8-sig")
+    else:
+        text, sha = read_text_source(home, raw)
     ledger = {}
+    projects = set()
     for row in table_rows(text, ["Contribution ID", "Project", "Primary skill", "Title",
                                  "Earned date", "Verification", "Evidence", "Awarded EXP"]):
-        identifier, _, skill, _, _, _, _, points = row
+        identifier, project, skill, _, _, _, _, points = row
         require(all(row) and points in {"0", "1", "2", "3"}, "Ledger row is incomplete or has invalid EXP.")
         require(identifier not in ledger, "Duplicate contribution ID in ledger.")
-        ledger[identifier] = (skill, int(points))
-    xp = sum(points for _, points in ledger.values())
+        ledger[identifier] = (skill, int(points), project)
+        projects.add(project)
+    xp = sum(points for _, points, _ in ledger.values())
     result = {"ledger": clean_relative(raw).as_posix(), "sha256": sha, **level_card(xp)}
     if contribution_id is not None:
         require(bool(contribution_id.strip()) and len(contribution_id) <= 128 and "|" not in contribution_id,
                 "Provide the stable contribution ID from the Markdown ledger.")
-        previous = ledger.get(contribution_id, ("", 0))[1]
+        previous = ledger.get(contribution_id, ("", 0, ""))[1]
         delta = max(0, award - previous)
         return {**result, "id": contribution_id, "previous_award": previous, "delta": delta,
                 "projected": level_card(xp + delta), "recorded": False}
@@ -995,7 +1139,11 @@ def progression(home, raw, contribution_id=None, award=None):
     catalog = "MEMORY/KNOWLEDGE/CLASSES.md"
     if not home.path(catalog).exists():
         catalog = "KNOWLEDGE/CLASSES.md"
-    class_text, catalog_sha = read_text_source(home, catalog)
+    if guarded:
+        data, catalog_sha = guardian_bytes(home, catalog, purpose, TEXT_LIMIT)
+        class_text = data.decode("utf-8-sig")
+    else:
+        class_text, catalog_sha = read_text_source(home, catalog)
     classes = {}
     skill_classes = {}
     for identifier, skills, *titles in table_rows(class_text, ["Class ID", "Skills", "Tier 1", "Tier 2", "Tier 3"]):
@@ -1007,7 +1155,7 @@ def progression(home, raw, contribution_id=None, award=None):
 
     skill_totals = {skill: 0 for skill in skill_classes}
     class_totals = {identifier: [0, 0] for identifier in classes}
-    for skill, points in ledger.values():
+    for skill, points, _ in ledger.values():
         skill_totals[skill] = skill_totals.get(skill, 0) + points
         if points and skill in skill_classes:
             totals = class_totals[skill_classes[skill]]
@@ -1021,10 +1169,77 @@ def progression(home, raw, contribution_id=None, award=None):
             titles.append({"class_id": identifier, "title": classes[identifier][tier - 1],
                            "tier": tier, "xp": points, "milestones": count})
     titles.sort(key=lambda title: (-title["xp"], -title["milestones"], title["class_id"]))
-    skills = {skill: {"xp": points, "status": "verified" if points else "unassessed"}
+    skills = {skill: {"xp": points, "status": "verified" if points else "unassessed",
+                      "level": level_card(points)["level"] if points else None}
               for skill, points in sorted(skill_totals.items())}
     return {**result, "catalog": catalog, "catalog_sha256": catalog_sha, "skills": skills,
-            "title": titles[0] if titles else None, "titles": titles}
+            "projects": len(projects), "title": titles[0] if titles else None, "titles": titles}
+
+
+def xp_record(home, raw, purpose, record):
+    fields = ("id", "project", "skill", "title", "earned_on", "verification", "evidence", "xp")
+    require(isinstance(record, dict) and record.keys() == set(fields), "Provide one complete milestone object.")
+    *values, xp = [record[field] for field in fields]
+    require(all(isinstance(value, str) and 1 <= len(value) <= 512 and value.strip() == value
+                and all(char.isprintable() for char in value) and "|" not in value for value in values),
+            "Milestone fields must contain one line of Markdown table text.")
+    require(type(xp) is int and 0 <= xp <= 3, "Award 0 to 3 EXP.")
+    identifier, project, skill, title, earned_on, verification, evidence = values
+    require(len(identifier) <= 128, "Contribution ID exceeds 128 characters.")
+    require(re.fullmatch(r"\d{4}-\d\d-\d\d", earned_on), "Use a YYYY-MM-DD earned date.")
+    datetime.strptime(earned_on, "%Y-%m-%d")
+    evidence_path = home.path(evidence, exists=True)
+    require(evidence_path.is_file() and " ; " not in evidence, "Use one exact evidence file per award.")
+    with home.lock():
+        preview = progression(home, raw, identifier, xp, purpose=purpose, guarded=True)
+        if not preview["delta"]:
+            return preview
+        data, sha = guardian_bytes(home, raw, purpose, TEXT_LIMIT)
+        ledger = data.decode("utf-8-sig")
+        header = ["Contribution ID", "Project", "Primary skill", "Title", "Earned date",
+                  "Verification", "Evidence", "Awarded EXP"]
+        rows = list(table_rows(ledger, header))
+        lines = ledger.splitlines(keepends=True)
+        start = next(i for i, line in enumerate(lines) if table_cells(line) == header) + 2
+        for index, row in enumerate(rows, start):
+            if row[0] != identifier:
+                continue
+            require(row[1:3] == [project, skill], "Keep the original project and primary skill for this ID.")
+            require(evidence not in row[-2].split(" ; "), "An increase needs a new evidence file.")
+            values[-1] = row[-2] + " ; " + evidence
+            break
+        else:
+            index = start + len(rows)
+        newline = "\r\n" if "\r\n" in ledger else "\n"
+        line = "| " + " | ".join([*values, str(xp)]) + " |" + newline
+        if index < start + len(rows):
+            lines[index] = line
+        else:
+            if index and not lines[index - 1].endswith("\n"):
+                lines[index - 1] += newline
+            lines.insert(index, line)
+        replacement = "".join(lines).encode("utf-8")
+        write = write_text_source(home, raw, sha, replacement)
+        return {**preview, "recorded": True, "sha256": write["sha256"], "snapshot_id": write["snapshot_id"]}
+
+
+def stats_display(card):
+    def meter(score, size=10):
+        filled = min(size, round(score * size / 100))
+        return "#" * filled + "-" * (size - filled)
+
+    title = (card["title"] or {}).get("title", "Unassessed")
+    progress = card["cognitive"]["ranks"]["progress"]["score"]
+    lines = [f"Level {card['level']} | {title} | {card['xp']} EXP", f"Progress [{meter(progress)}] {progress}%"]
+    lines.append("COGNITIVE RANK")
+    for name, rank in card["cognitive"]["ranks"].items():
+        lines.append(f"{name}: {rank['rank']} [{meter(rank['score'])}] {rank['score']}%")
+    lines.append("SKILLS")
+    peak = max((skill["xp"] for skill in card["skills"].values()), default=0)
+    for name, skill in card["skills"].items():
+        lines.append(f"{name}: [{meter(skill['xp'] / peak * 100)}] {skill['xp']} EXP"
+                     if skill["xp"] else f"{name}: unassessed")
+    return "\n".join(lines)
 
 
 def rng(args, home):
@@ -1042,7 +1257,11 @@ def rng(args, home):
         require(args.pool is not None, "Provide --pool with a relative JSON file.")
         file = home.path(args.pool, exists=True)
         require(file.is_file() and file.stat().st_size <= 1024 * 1024, "Pool must be a file of at most 1 MiB.")
-        pool = json.loads(file.read_text(encoding="utf-8"))
+        if hasattr(args, "purpose"):
+            data, _ = guardian_bytes(home, args.pool, args.purpose, 1024 * 1024)
+            pool = json.loads(data)
+        else:
+            pool = json.loads(file.read_text(encoding="utf-8"))
         require(isinstance(pool, list) and 1 <= len(pool) <= 10000, "Pool must contain 1 to 10000 entries.")
         if args.mode == "choose":
             values = [{"index": (index := secrets.randbelow(len(pool))) + 1, "value": pool[index]} for _ in range(args.count)]
@@ -1060,27 +1279,38 @@ def heading_slug(text):
     return re.sub(r"[\s_]+", "-", text).strip("-")
 
 
-def anchor_matches(path, anchor):
-    for line in path.read_text(encoding="utf-8").splitlines():
+def anchor_matches(path, anchor, text=None):
+    if text is None:
+        text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
         if line.startswith("#") and heading_slug(line.lstrip("#").strip()) == anchor:
             return True
     return False
 
 
-def links_check(home):
+def links_check(home, *, guarded=False):
     scanned = 0
     checked = 0
     failed = 0
     findings = []
     for path in sorted(home.root.rglob("*.md")):
         relative = path.relative_to(home.root)
-        if relative.parts[0] in {"ARCHIVE", ".recycle"} or any(part in SKIP_PARTS for part in relative.parts):
+        if (guarded and relative.parts[0].upper() in USER_ROOTS) or relative.parts[0] in {"ARCHIVE", ".recycle"} \
+                or any(part in SKIP_PARTS for part in relative.parts):
             continue
         if not path.is_file():
             continue
         require(path.stat().st_size <= TEXT_LIMIT, "Markdown file exceeds the scan limit.")
         scanned += 1
-        text = path.read_text(encoding="utf-8")
+        if guarded:
+            try:
+                data, _ = guardian_bytes(home, relative.as_posix(), None, TEXT_LIMIT)
+            except GuardianDenied:
+                scanned -= 1
+                continue
+            text = data.decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
         for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text):
             raw = target.strip().split(" ", 1)[0].strip("<>")
             if not raw or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", raw) or raw.startswith("//"):
@@ -1099,8 +1329,16 @@ def links_check(home):
                 entry["state"] = "outside"
             elif not destination.exists():
                 entry["state"] = "missing"
-            elif anchor and destination.suffix.lower() == ".md" and not anchor_matches(destination, anchor):
-                entry["state"] = "anchor"
+            elif anchor and destination.suffix.lower() == ".md":
+                destination_text = None
+                if guarded:
+                    try:
+                        data, _ = guardian_bytes(home, destination.relative_to(home.root).as_posix(), None, TEXT_LIMIT)
+                    except SafetyError:
+                        continue
+                    destination_text = data.decode("utf-8")
+                if not anchor_matches(destination, anchor, destination_text):
+                    entry["state"] = "anchor"
             if "state" in entry:
                 failed += 1
                 require(len(findings) < 200, "Too many broken references; fix the first batch.")
@@ -1172,11 +1410,11 @@ def release_check(home, project=None, compare=None):
         text = file.read_text(encoding="utf-8")
         return text, "\n".join(text.splitlines()[:lines])
 
-    record("code-version", VERSION == version, version, VERSION, "TOOLS/vhd.py")
-    for raw, marker in (("README.md", "Virtual Home DIY {v}"), ("VERIFICATION.md", "{v}")):
-        text, top = top_lines(raw, 3)
+    record("code-version", VERSION == version, version, VERSION, "TOOLS/homestead.py")
+    for raw, marker in (("README.md", "Project Homestead {v}"), ("VERIFICATION.md", "{v}")):
+        _, top = top_lines(raw, 3)
         record("document-version", marker.format(v=version) in top, marker.format(v=version),
-               text.splitlines()[0] if text else "", raw)
+               "expected version marker missing", raw)
     changelog, _ = top_lines("CHANGELOG.md", 80)
     headings = re.findall(r"^##\s+(\d+\.\d+\.\d+)\s*$", changelog, flags=re.MULTILINE)
     require(headings, "Changelog has no version heading.")
@@ -1202,7 +1440,7 @@ def release_check(home, project=None, compare=None):
     if project:
         root = Path(os.path.abspath(project))
         require(root.is_dir(), "Project folder is not a directory.")
-        for name, marker in (("README.md", "Virtual Home DIY {v}"), ("HANDOFF.md", "VHD {v}")):
+        for name, marker in (("README.md", "Project Homestead {v}"), ("HANDOFF.md", "Homestead {v}")):
             file = root / name
             if not file.is_file():
                 record("project-document", False, marker.format(v=version), "missing", name)
@@ -1228,9 +1466,10 @@ def release_check(home, project=None, compare=None):
 
 
 PENDING_SURFACES = ()
-COMMANDS = ("apply", "audit", "detect", "doctor", "git", "heal", "index", "init", "inspect", "links",
+COMMANDS = ("apply", "audit", "detect", "doctor", "git", "guardian", "heal", "index", "init", "inspect", "links",
             "lock", "manifest", "method", "now", "plan", "read", "records", "release", "rng", "routes",
-            "runtime", "search", "stats", "status", "upgrade", "validate", "write", "xp-preview")
+            "runtime", "search", "stats", "status", "upgrade", "validate", "write", "xp-preview", "xp-record", "tools", "preflight", "zone", "triage",
+            "privacy", "knowledge", "cashbook", "provider", "lookup")
 CARD_STATUS = {"VERIFIED", "HYPOTHESIS", "FAILED", "STALE", "SUPERSEDED"}
 CARD_LABELS = ("Stable ID", "Title", "Status", "Steward", "Use when", "Procedure",
                "Environment and prerequisites", "What was tried", "What was assumed", "What actually happened",
@@ -1241,8 +1480,18 @@ METHOD_REQUIRED = ("Stable ID", "Title", "Status", "Steward", "Use when", "Proce
 FAILURE_REQUIRED = ("Stable ID", "Title", "Status", "Steward", "Use when", "What was tried",
                     "What was assumed", "What actually happened", "Why it failed",
                     "Replacement or open question", "Evidence", "Recheck when")
-PROGRESSION_RULES = "levelling-1"
+PROGRESSION_RULES = "levelling-2"
 PERSONA_MARKERS = ("Name: Vee", "Voice:", "Role:", "Continuity")
+COGNITIVE_RULES = "cognitive-1"
+COGNITIVE_REFERENCE = 20
+COGNITIVE_BREADTH_STEP = 12.5
+COGNITIVE_PROJECT_STEP = 20
+COGNITIVE_LETTERS = ((85, "S"), (70, "A"), (55, "B"), (40, "C"), (25, "D"), (0, "E"))
+CLOSEOUT_THRESHOLD = 8
+CLOSEOUT_LIMIT = 200
+CLOSEOUT_EXCLUDED_PARTS = {"node_modules", "_recycle_bin", ".context_state", "__pycache__", ".git", ".venv"}
+CLOSEOUT_EXCLUDED_SUFFIXES = (".tmp", ".lock", "~")
+CLOSEOUT_PROTECTED_PARTS = {"private", "archive"}
 
 
 def card_fields(text):
@@ -1259,7 +1508,7 @@ def card_fields(text):
     return fields
 
 
-def knowledge_cards(home, catalog=None):
+def knowledge_cards(home, catalog=None, *, guarded=False, purpose=None):
     raw = catalog or "MEMORY/KNOWLEDGE"
     folder = home.path(raw)
     if not catalog and not folder.is_dir():
@@ -1271,12 +1520,20 @@ def knowledge_cards(home, catalog=None):
     cards = []
     for path in files:
         require(path.stat().st_size <= 64 * 1024, "Knowledge card exceeds the size limit.")
-        cards.append((path, card_fields(path.read_text(encoding="utf-8"))))
+        if guarded:
+            try:
+                data, _ = guardian_bytes(home, path.relative_to(home.root).as_posix(), purpose, 64 * 1024)
+            except GuardianDenied:
+                continue
+            text = data.decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
+        cards.append((path, card_fields(text)))
     return raw, cards
 
 
-def method_check(home, catalog=None):
-    label, cards = knowledge_cards(home, catalog)
+def method_check(home, catalog=None, *, guarded=False, purpose=None):
+    label, cards = knowledge_cards(home, catalog, guarded=guarded, purpose=purpose)
     findings = []
     seen = {}
     listing = []
@@ -1313,26 +1570,48 @@ def method_check(home, catalog=None):
     return {"catalog": label, "cards": listing, "failed": len(findings), "findings": findings}
 
 
-def method_show(home, identifier, catalog=None):
+def method_show(home, identifier, catalog=None, *, guarded=False, purpose=None):
     require(isinstance(identifier, str) and bool(identifier.strip()), "Provide a card ID.")
-    label, cards = knowledge_cards(home, catalog)
+    label, cards = knowledge_cards(home, catalog, guarded=guarded, purpose=purpose)
     matches = [(path, fields) for path, fields in cards if fields.get("Stable ID") == identifier.strip()]
     require(matches, "No card carries that ID.")
     require(len(matches) == 1, "Duplicate card IDs; repair the catalog before reading one.")
     path, fields = matches[0]
-    text = path.read_text(encoding="utf-8")
+    if guarded:
+        data, _ = guardian_bytes(home, path.relative_to(home.root).as_posix(), purpose, 64 * 1024)
+        text = data.decode("utf-8")
+    else:
+        text = path.read_text(encoding="utf-8")
     require(len(text) <= 8192, "Card is too large for one bounded read.")
     return {"catalog": label, "id": identifier.strip(), "status": fields.get("Status"),
             "title": fields.get("Title"), "path": path.relative_to(home.root).as_posix(), "text": text}
 
 
-def status_card(home, raw, write=False):
-    result = progression(home, raw)
+def cognitive_rank(result):
+    scored = [entry["xp"] for entry in result.get("skills", {}).values() if entry["xp"]]
+    next_xp = result.get("next_level_xp")
+    xp = result.get("xp", 0)
+    scores = {
+        "depth": min(100, round(max(scored, default=0) / COGNITIVE_REFERENCE * 100)),
+        "breadth": min(100, round(len(scored) * COGNITIVE_BREADTH_STEP)),
+        "application": min(100, result.get("projects", 0) * COGNITIVE_PROJECT_STEP),
+        "progress": 100 if not next_xp else min(100, round(xp / next_xp * 100)),
+    }
+    ranks = {}
+    for name, score in scores.items():
+        ranks[name] = {"score": score,
+                       "rank": next(letter for minimum, letter in COGNITIVE_LETTERS if score >= minimum)}
+    return {"rules": COGNITIVE_RULES, "derived": True, "ranks": ranks}
+
+
+def status_card(home, raw, write=False, *, purpose=None, guarded=False):
+    result = progression(home, raw, purpose=purpose, guarded=guarded)
     parts = clean_relative(result["ledger"]).parts
-    card = {"schema": 1, "derived": True, "generated_by": "vhd.py status", "rules": PROGRESSION_RULES,
+    card = {"schema": 1, "derived": True, "generated_by": "homestead.py status", "rules": PROGRESSION_RULES,
             "ledger": result["ledger"], "xp": result["xp"], "level": result["level"],
             "next_level_xp": result["next_level_xp"], "title": result["title"],
             "titles": result["titles"], "skills": result["skills"],
+            "projects": result.get("projects", 0), "cognitive": cognitive_rank(result),
             "sources": {"ledger": result["sha256"], "catalog": result["catalog_sha256"],
                         "rules": PROGRESSION_RULES}}
     folder = home.path("/".join(parts[:-1]))
@@ -1722,9 +2001,9 @@ def runtime_command(home, action, kind=None, payload=None, limit=None, now=False
         return {"ran": ran, "budget": {key: budget[key] for key in ("max_tasks_per_run", "tasks_used")}}
 
 
-def git_command(cwd, *args, check=True):
+def git_command(cwd, *args, check=True, encoding=None):
     require(shutil.which("git"), "Git is not available; Smart Git stays optional.")
-    completed = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=120)
+    completed = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding=encoding, timeout=120)
     if check and completed.returncode != 0:
         raise SafetyError("Git refused %s: %s" % (" ".join(args[:2]), completed.stderr.strip()[:300]))
     return completed
@@ -1742,7 +2021,7 @@ def repo_root(path):
 def git_identity(repo):
     if git_command(repo, "config", "user.email", check=False).stdout.strip():
         return []
-    return ["-c", "user.name=VHD", "-c", "user.email=vhd@localhost"]
+    return ["-c", "user.name=Homestead", "-c", "user.email=homestead@localhost"]
 
 
 def export_files(home):
@@ -1892,7 +2171,7 @@ def git_verify(home, destination):
             "files": len(files), "extras": len(extras), "findings": findings[:50]}
 
 
-def git_checkpoint(home, paths, message, include_ignored=False):
+def git_checkpoint(home, paths, message, include_ignored=False, allow_missing=False):
     require_mutation()
     local = repo_root(home.root)
     require(local is not None, "The home is not inside a Git repository.")
@@ -1900,15 +2179,175 @@ def git_checkpoint(home, paths, message, include_ignored=False):
     require(isinstance(message, str) and 1 <= len(message.strip()) <= 200, "Provide a one-line commit message.")
     cleaned = []
     for raw in paths:
-        target = home.path(raw, exists=True)
+        target = home.path(raw, exists=not allow_missing)
         require(target.is_relative_to(local), "Checkpoint paths must stay inside the local repository.")
+        require(not target.is_dir(), "Checkpoint scope needs exact files.")
         cleaned.append(target.relative_to(local).as_posix())
     options = ["-f"] if include_ignored else []
-    git_command(local, "add", *options, "--", *cleaned)
-    if not git_command(local, "status", "--porcelain", check=False).stdout.strip():
+    diff_args = ("--name-only", "--no-renames", "-z", "--", *cleaned)
+    before = git_command(local, "--literal-pathspecs", "diff", "--cached", *diff_args, encoding="utf-8")
+    unstaged = git_command(local, "--literal-pathspecs", "diff", *diff_args, encoding="utf-8")
+    partially_staged = set(before.stdout.split("\0")) & set(unstaged.stdout.split("\0"))
+    require(not (partially_staged - {""}),
+            "A selected file is partially staged. Review its staged changes before closeout.")
+    git_command(local, "--literal-pathspecs", "add", *options, "--", *cleaned)
+    staged = git_command(local, "--literal-pathspecs", "diff", "--cached", "--name-only", "--", *cleaned)
+    if not staged.stdout.strip():
         return {"committed": None, "message": "Nothing staged."}
-    git_command(local, *git_identity(local), "commit", "-m", message.strip())
+    git_command(local, "--literal-pathspecs", *git_identity(local), "commit", "--only", "-m", message.strip(),
+                "--", *cleaned)
     return {"committed": git_command(local, "rev-parse", "HEAD").stdout.strip()[:12], "files": cleaned}
+
+
+def closeout_excluded(relative):
+    parts = relative.split("/")
+    if any(part in CLOSEOUT_EXCLUDED_PARTS for part in parts):
+        return True
+    name = parts[-1]
+    return name.startswith("~$") or name.endswith(CLOSEOUT_EXCLUDED_SUFFIXES)
+
+
+def closeout_protected(relative):
+    return any(part in CLOSEOUT_PROTECTED_PARTS for part in relative.lower().split("/")[:-1])
+
+
+def closeout_group(state):
+    if state == "??":
+        return "untracked"
+    if "U" in state or state in {"AA", "DD"}:
+        return "conflict"
+    if "D" in state:
+        return "deleted"
+    if "A" in state:
+        return "added"
+    if "R" in state:
+        return "renamed"
+    if "C" in state:
+        return "copied"
+    return "modified"
+
+
+def closeout_entries(home, local, paths):
+    report = git_command(local, "--literal-pathspecs", "status", "--porcelain=v1", "-z", "-uall",
+                         "--", *paths, encoding="utf-8")
+    entries = []
+    records = iter(report.stdout.split("\0"))
+    for line in records:
+        if len(line) < 4 or line[:2] == "!!":
+            continue
+        state, text = line[:2], line[3:]
+        source = None
+        if any(kind in state for kind in "RC"):
+            try:
+                source = clean_relative(next(records, "")).as_posix()
+            except SafetyError:
+                source = None
+        try:
+            relative = clean_relative(text).as_posix()
+        except SafetyError:
+            entries.append({"path": text, "state": state, "group": "unparsed", "source": source})
+            continue
+        group = closeout_group(state)
+        resolved = (local / relative).resolve()
+        if not resolved.is_relative_to(home.root):
+            entries.append({"path": relative, "state": state, "group": "outside-home", "source": source})
+            continue
+        entries.append({"path": resolved.relative_to(home.root).as_posix(), "repo_path": relative,
+                        "state": state, "group": group, "source": source})
+    return sorted(entries, key=lambda entry: entry["path"])
+
+
+def closeout_kind(local, entry):
+    if entry["group"] != "renamed" or not entry.get("source"):
+        return entry["group"]
+    head = git_command(local, "rev-parse", "HEAD:" + entry["source"], check=False)
+    current = git_command(local, "hash-object", "--", entry.get("repo_path", entry["path"]), check=False)
+    before, after = head.stdout.strip(), current.stdout.strip()
+    if head.returncode == 0 and current.returncode == 0 and before and before == after:
+        return "renamed-clean"
+    return "renamed-edited"
+
+
+def closeout_scan(home, repo=None, limit=CLOSEOUT_LIMIT, *, files=None):
+    local = Path(os.path.abspath(repo)).resolve() if repo else repo_root(home.root)
+    require(local is not None, "Closeout needs Git available and the home inside a repository.")
+    require(home.root.is_relative_to(local), "The home must stay inside the scanned repository.")
+    paths = []
+    for raw in files or ():
+        target = home.path(raw)
+        require(not target.is_dir(), "Closeout scope needs exact files.")
+        paths.append(target.relative_to(local).as_posix())
+    entries = closeout_entries(home, local, paths)
+    counts = {}
+    candidates = []
+    protected = []
+    for entry in entries:
+        counts[entry["group"]] = counts.get(entry["group"], 0) + 1
+        if entry["group"] in {"outside-home", "unparsed"}:
+            continue
+        if closeout_excluded(entry["path"]):
+            continue
+        if closeout_protected(entry["path"]):
+            protected.append(entry["path"])
+            continue
+        candidates.append({**entry, "kind": closeout_kind(local, entry)})
+    gates = []
+    if counts.get("deleted"):
+        gates.append("a deleted path came without a recorded rename")
+    if counts.get("conflict"):
+        gates.append("an unresolved merge conflict is present")
+    if protected:
+        gates.append("a protected path needs an explicit file list")
+    if len(candidates) >= CLOSEOUT_THRESHOLD:
+        gates.append("%d eligible paths exceed the threshold of %d" % (len(candidates), CLOSEOUT_THRESHOLD - 1))
+    if counts.get("unparsed"):
+        gates.append("a path with quoted characters needs an explicit file list")
+    return {"repo": local.as_posix(), "home": home.root.as_posix(), "counts": counts,
+            "changed": len(entries), "candidates": candidates[:limit], "candidate_count": len(candidates),
+            "protected": protected[:limit], "gates": gates, "clean": not entries}
+
+
+def closeout(home, action, repo=None, files=None, message=None):
+    scan = closeout_scan(home, repo, limit=max(CLOSEOUT_LIMIT, len(files or ())), files=files)
+    if action == "scan":
+        return scan
+    require_mutation()
+    if scan["clean"]:
+        return {**scan, "committed": None, "message": "Nothing to close out."}
+    available = {entry["path"]: entry for entry in scan["candidates"]}
+    if files:
+        chosen = []
+        rename_sources = {entry["source"] for entry in scan["candidates"] if entry["group"] == "renamed"}
+        for raw in files:
+            relative = clean_relative(raw).as_posix()
+            if relative in scan["protected"]:
+                raise SafetyError("A protected path is never closed automatically: " + relative)
+            if relative not in available and home.path(relative).relative_to(Path(scan["repo"])).as_posix() in rename_sources:
+                continue
+            require(relative in available, "Requested path is not an eligible pending change: " + relative)
+            require(available[relative]["group"] != "conflict", "Resolve the selected conflict before closeout.")
+            chosen.append(relative)
+    else:
+        require(not scan["gates"], "Closeout is gated: " + "; ".join(scan["gates"]) +
+                ". Pass --path to choose files explicitly.")
+        chosen = [entry["path"] for entry in scan["candidates"]]
+    chosen = list(dict.fromkeys(chosen))
+    for entry in scan["candidates"]:
+        if entry["path"] not in chosen or entry["group"] != "renamed":
+            continue
+        require(entry.get("source"), "Select both exact rename paths before closeout.")
+        local = Path(scan["repo"])
+        source = (local / entry["source"]).resolve()
+        require(source.is_relative_to(home.root), "Rename source is outside the home.")
+        relative = source.relative_to(home.root).as_posix()
+        require(not closeout_protected(relative), "Rename source is protected.")
+        require(not files or relative in files, "Select both exact rename paths before closeout.")
+        if relative not in chosen:
+            chosen.append(relative)
+    require(chosen, "No eligible path to close out.")
+    require(isinstance(message, str) and message.strip(), "Provide a one-line message for the closeout.")
+    result = git_checkpoint(home, chosen, message, allow_missing=True)
+    return {**scan, **result, "closed": chosen}
 
 
 def git_publish(home, destination, confirm, message=None):
@@ -2148,6 +2587,9 @@ def upgrade_package(home, package, write=False, confirm=None):
               "entries": entries, "written": [], "manifest_updated": False}
     if interrupted is not None:
         result["interrupted"] = interrupted
+    if home.path("TOOLS/vhd.py").is_file():
+        result["legacy"] = {"path": "TOOLS/vhd.py",
+                            "suggestion": "superseded by TOOLS/homestead.py; recycle it after this update"}
     if not write:
         result["notice"] = "Preview only. Nothing written."
         return result
@@ -2195,7 +2637,7 @@ def upgrade_package(home, package, write=False, confirm=None):
     result["state_written"] = True
     result["snapshots"] = snapshots
     result["skipped"] = applied
-    result["restart_required"] = "TOOLS/vhd.py" in result["written"]
+    result["restart_required"] = "TOOLS/homestead.py" in result["written"]
     result["host_prompt_stale"] = "sysprompt_to_copy.txt" in result["written"]
     if counts.get("dropped"):
         result["notice"] = "Dropped files stay in place; recycle them explicitly if unwanted."
@@ -2208,28 +2650,32 @@ def tokens_of(text):
 
 def index_scope(relative):
     text = relative.as_posix()
-    if text.startswith(INDEX_DERIVED_PREFIXES):
+    if text.upper().startswith(INDEX_DERIVED_PREFIXES):
         return False
     folded = {part.casefold() for part in relative.parts}
     if folded & INDEX_EXCLUDED_PARTS or folded & INDEX_PRIVATE_PARTS:
         return False
-    return relative.suffix.lower() in INDEX_SUFFIXES
+    return relative.suffix.lower() in (INDEX_SUFFIXES | GUARDIAN_IMAGE_TYPES.keys())
 
 
-def index_entry(path, relative, previous=None, full=False):
+def index_entry(home, path, relative, previous=None, full=False):
     s = check_node(path)
     entry = {"path": relative.as_posix(), "bytes": s.st_size, "mtime_ns": s.st_mtime_ns}
     if not full and previous and previous.get("bytes") == s.st_size and previous.get("mtime_ns") == s.st_mtime_ns \
             and previous.get("sha256"):
         entry.update({"sha256": previous["sha256"], "terms": previous.get("terms", {}),
-                      "words": previous.get("words", 0)})
+                      "words": previous.get("words", 0), "metadata_only": previous.get("metadata_only", False)})
         return entry, False
     if s.st_size > TEXT_LIMIT:
         entry.update({"sha256": None, "terms": {}, "words": 0, "skipped": "oversized"})
         return entry, False
     entry["sha256"] = hash_file(path)
+    if entry["sha256"] != guardian_public_hash(home, relative):
+        entry.update({"terms": {}, "words": 0, "metadata_only": True})
+        return entry, True
     try:
-        text = path.read_text(encoding="utf-8")
+        data, _ = guardian_bytes(home, relative.as_posix(), None, TEXT_LIMIT)
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         entry.update({"terms": {}, "words": 0, "skipped": "not-utf8"})
         return entry, True
@@ -2259,7 +2705,8 @@ def index_build(home, previous=None, full=False):
         try:
             if not path.is_file():
                 continue
-            entry, changed = index_entry(path, relative, previous_docs.get(relative.as_posix()), full)
+            path = home.path(relative.as_posix(), exists=True)
+            entry, changed = index_entry(home, path, relative, previous_docs.get(relative.as_posix()), full)
         except (OSError, SafetyError) as error:
             skipped.append({"path": relative.as_posix(), "reason": str(error)[:160]})
             continue
@@ -2411,7 +2858,7 @@ def index_command(home, full=False):
             "freshness": freshness_report(report.get("state", "error"), document)}
 
 
-def search_matches(documents, terms, prefix):
+def search_matches(home, documents, terms, prefix):
     hits = []
     for doc in documents:
         if not isinstance(doc, dict) or doc.get("skipped"):
@@ -2419,7 +2866,20 @@ def search_matches(documents, terms, prefix):
         path = doc.get("path", "")
         if prefix and not (path == prefix or path.startswith(prefix + "/")):
             continue
-        counts = doc.get("terms") or {}
+        name_terms = set(tokens_of(Path(path).stem))
+        cached_terms = doc.get("terms") or {}
+        if not any(term in name_terms or term in cached_terms for term in terms):
+            continue
+        counts = {}
+        try:
+            relative, current = guardian_path(home, path)
+            public_hash = guardian_public_hash(home, relative)
+            if public_hash and doc.get("sha256") == public_hash and hash_file(current) == public_hash:
+                counts = cached_terms
+        except (OSError, SafetyError):
+            continue
+        if not counts:
+            counts = dict.fromkeys(name_terms, 1)
         matched = [term for term in terms if term in counts]
         if not matched:
             continue
@@ -2433,7 +2893,9 @@ def search_matches(documents, terms, prefix):
 def search_scan(home, terms, prefix):
     hits = []
     scanned = 0
-    for path in sorted(home.root.rglob("*")):
+    scope = home.path(prefix) if prefix else home.root
+    paths = scope.rglob("*") if scope.is_dir() else (scope,)
+    for path in sorted(paths):
         relative = path.relative_to(home.root)
         if not index_scope(relative):
             continue
@@ -2444,10 +2906,15 @@ def search_scan(home, terms, prefix):
             if not path.is_file():
                 continue
             s = check_node(path)
-            if s.st_size > TEXT_LIMIT:
-                continue
-            content = path.read_text(encoding="utf-8")
-        except (OSError, SafetyError, UnicodeDecodeError):
+            _, path = guardian_path(home, text)
+            content = path.stem
+            if s.st_size <= TEXT_LIMIT and guardian_public_hash(home, relative):
+                try:
+                    data, _ = guardian_bytes(home, text, None, TEXT_LIMIT)
+                    content += " " + data.decode("utf-8")
+                except (GuardianDenied, UnicodeDecodeError):
+                    pass
+        except (OSError, SafetyError):
             continue
         scanned += 1
         require(scanned <= LIMIT_FILES, "The home has too many files to scan.")
@@ -2467,7 +2934,8 @@ def search_snippet(home, path_text, terms, width=200):
         path = home.path(path_text, exists=True)
         if not path.is_file() or path.stat().st_size > TEXT_LIMIT:
             return None
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        data, _ = guardian_bytes(home, path_text, None, TEXT_LIMIT)
+        for number, line in enumerate(data.decode("utf-8").splitlines(), 1):
             folded = line.casefold()
             if any(term in folded for term in terms):
                 return {"line": number, "text": " ".join(line.split())[:width]}
@@ -2503,7 +2971,7 @@ def search_command(home, query, limit=10, scope=None, full=False):
         if document is None:
             state = "unindexed" if repaired["state"] == "HEALTHY" else "error"
     if document is not None:
-        hits = search_matches(document.get("documents", []), terms, prefix)
+        hits = search_matches(home, document.get("documents", []), terms, prefix)
         source = "index"
     else:
         hits = search_scan(home, terms, prefix)
@@ -2658,13 +3126,15 @@ def heal(home):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="VHD local helpers. No network, purge, or automatic cleanup.")
+    parser = argparse.ArgumentParser(description="Homestead local helpers. No network, purge, or automatic cleanup.")
     parser.add_argument("--home", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--version", action="version", version=VERSION)
     subs = parser.add_subparsers(dest="command", required=True)
+    import homestead_portable as portable
+    portable.register(subs)
     subs.add_parser("init", help="Create missing starter files on Windows")
     subs.add_parser("now", help="Read the host clock")
-    d = subs.add_parser("detect", help="Find VHD home candidates near a folder")
+    d = subs.add_parser("detect", help="Find Homestead home candidates near a folder")
     d.add_argument("--path")
     d.add_argument("--depth", type=int, default=3)
     m = subs.add_parser("manifest", help="Build or refresh the package manifest")
@@ -2675,15 +3145,26 @@ def main(argv=None):
     r.add_argument("--high", type=int)
     r.add_argument("--count", type=int, default=1)
     r.add_argument("--pool")
+    r.add_argument("--purpose")
     i = subs.add_parser("inspect", help="Inspect exact file metadata")
     i.add_argument("path")
     i.add_argument("--sha256", action="store_true")
     i.add_argument("--links", action="store_true")
+    i.add_argument("--purpose")
     read = subs.add_parser("read", help="Read one bounded UTF-8 page")
     read.add_argument("path")
     read.add_argument("--offset", type=int, default=0)
     read.add_argument("--length", type=int, default=PAGE_LIMIT)
     read.add_argument("--sha256")
+    read.add_argument("--purpose")
+    guardian = subs.add_parser("guardian", help="Manage scoped permissions for sensitive files")
+    actions = guardian.add_subparsers(dest="action", required=True)
+    actions.add_parser("status")
+    actions.add_parser("mode").add_argument("setting", choices=["true", "false"])
+    for action in ("authorize", "forget", "attachment"):
+        command = actions.add_parser(action)
+        command.add_argument("path")
+        command.add_argument("--purpose", required=True)
     validate = subs.add_parser("validate", help="Check an exact UTF-8 or JSON file")
     validate.add_argument("path")
     validate.add_argument("--kind", choices=["utf8", "json"], default="utf8")
@@ -2696,6 +3177,11 @@ def main(argv=None):
     preview.add_argument("ledger")
     preview.add_argument("--id", required=True)
     preview.add_argument("--award", type=int, choices=range(4), required=True)
+    preview.add_argument("--purpose")
+    stats.add_argument("--purpose")
+    record = subs.add_parser("xp-record", help="Record one verified milestone from JSON on stdin")
+    record.add_argument("ledger")
+    record.add_argument("--purpose", required=True)
     p = subs.add_parser("plan", help="Preview a guarded recovery operation")
     p.add_argument("action", choices=["snapshot", "update", "archive", "recycle", "restore"])
     p.add_argument("--path")
@@ -2714,7 +3200,9 @@ def main(argv=None):
     u.add_argument("--sha256")
     u.add_argument("--apply", action="store_true")
     u.add_argument("--confirm")
-    subs.add_parser("links", help="Check Markdown links and anchors")
+    links = subs.add_parser("links", help="Check Markdown links and anchors")
+    links.add_argument("--path", action="append")
+    links.add_argument("--purpose")
     subs.add_parser("routes", help="Check the startup route manifest")
     subs.add_parser("audit", help="Scan release files for private or sensitive content").add_argument("--path")
     rtm = subs.add_parser("runtime", help="Inspect or drive the optional deterministic runtime")
@@ -2731,6 +3219,11 @@ def main(argv=None):
     gt.add_argument("--confirm")
     gt.add_argument("--public")
     gt.add_argument("--include-ignored", action="store_true")
+    co = subs.add_parser("closeout", help="Classify pending changes and close them in one guarded commit")
+    co.add_argument("action", choices=["scan", "run"])
+    co.add_argument("--repo")
+    co.add_argument("--path", action="append", default=[])
+    co.add_argument("--message")
     rel = subs.add_parser("release", help="Verify version consistency and release contents")
     rel.add_argument("--project")
     rel.add_argument("--compare")
@@ -2740,9 +3233,12 @@ def main(argv=None):
     me.add_argument("action", choices=["check", "show"])
     me.add_argument("id", nargs="?")
     me.add_argument("--catalog")
+    me.add_argument("--purpose")
     st = subs.add_parser("status", help="Derive a compact progression card")
     st.add_argument("ledger")
     st.add_argument("--write", action="store_true")
+    st.add_argument("--purpose")
+    st.add_argument("--display", action="store_true")
     ix = subs.add_parser("index", help="Build or refresh the local content index")
     ix.add_argument("--full", action="store_true")
     se = subs.add_parser("search", help="Search the local content index")
@@ -2773,17 +3269,29 @@ def main(argv=None):
             elif args.command == "rng":
                 result = rng(args, home)
             elif args.command == "inspect":
-                result = inspect(home, args.path, args.sha256, args.links)
+                result = inspect(home, args.path, args.sha256, args.links, purpose=args.purpose, guarded=True)
             elif args.command == "read":
-                result = read_page(home, args.path, args.offset, args.length, args.sha256)
+                result = read_page(home, args.path, args.offset, args.length, args.sha256,
+                                   guarded=True, purpose=args.purpose)
+            elif args.command == "guardian":
+                if args.action == "attachment":
+                    result = guardian_attachment(home, args.path, args.purpose)
+                else:
+                    result = guardian_command(home, args.action, getattr(args, "path", None),
+                                              getattr(args, "purpose", None), getattr(args, "setting", None))
             elif args.command == "validate":
                 result = validate_text(home, args.path, args.kind)
             elif args.command == "write":
                 result = write_text_source(home, args.path, args.sha256, read_write_request())
             elif args.command == "stats":
-                result = progression(home, args.ledger)
+                result = progression(home, args.ledger, purpose=args.purpose, guarded=True)
             elif args.command == "xp-preview":
-                result = progression(home, args.ledger, args.id, args.award)
+                result = progression(home, args.ledger, args.id, args.award, purpose=args.purpose, guarded=True)
+            elif args.command == "xp-record":
+                body = sys.stdin.buffer.read(16385)
+                require(len(body) <= 16384, "Milestone input exceeds 16 KiB.")
+                record = json.loads(body.decode("utf-8-sig"), object_pairs_hook=unique_json_object)
+                result = xp_record(home, args.ledger, args.purpose, record)
             elif args.command == "plan":
                 result = home.plan(args.action, args.path, args.source, args.id, args.reason, args.allow_core)
             elif args.command == "apply":
@@ -2791,7 +3299,7 @@ def main(argv=None):
             elif args.command == "upgrade":
                 result = upgrade(home, args.package, args.apply, args.confirm, args.zip, args.sha256)
             elif args.command == "links":
-                result = links_check(home)
+                result = portable.scoped_links(home, args.path, args.purpose) if args.path else links_check(home, guarded=True)
             elif args.command == "routes":
                 result = routes_check(home)
             elif args.command == "release":
@@ -2814,13 +3322,19 @@ def main(argv=None):
                     result = git_publish(home, args.to, args.confirm, args.message)
                 else:
                     result = git_checkpoint(home, args.path, args.message, args.include_ignored)
+            elif args.command == "closeout":
+                result = closeout(home, args.action, args.repo, args.path, args.message)
             elif args.command == "doctor":
                 result = doctor(home, args.mode)
             elif args.command == "method":
-                result = method_check(home, args.catalog) if args.action == "check" else method_show(
-                    home, args.id, args.catalog)
+                if args.action == "check":
+                    result = method_check(home, args.catalog, guarded=True, purpose=args.purpose)
+                else:
+                    result = method_show(home, args.id, args.catalog, guarded=True, purpose=args.purpose)
             elif args.command == "status":
-                result = status_card(home, args.ledger, args.write)
+                result = status_card(home, args.ledger, args.write, purpose=args.purpose, guarded=True)
+                if args.display:
+                    result["display"] = stats_display(result["card"])
             elif args.command == "index":
                 result = index_command(home, args.full)
             elif args.command == "search":
@@ -2829,11 +3343,13 @@ def main(argv=None):
                 result = heal(home)
             elif args.command == "lock":
                 result = lock_recover(home) if args.recover else lock_report(home)
-            else:
+            elif args.command == "records":
                 result = home.records(args.limit, args.id)
+            else:
+                result = portable.handle(home, args)
         status = "OK"
         code = 0
-        if args.command in {"links", "routes", "release", "method", "audit"} and result.get("failed"):
+        if args.command in {"links", "routes", "release", "method", "audit", "preflight", "privacy", "provider"} and result.get("failed"):
             status, code = "FAIL", 1
         elif args.command == "git" and args.action == "verify" and not result.get("passed"):
             status, code = "FAIL", 1
@@ -2843,6 +3359,9 @@ def main(argv=None):
             status, code = "PARTIAL", 3
         print(json.dumps({"status": status, **result}, ensure_ascii=True))
         return code
+    except GuardianDenied as denied:
+        print(json.dumps(denied.result, ensure_ascii=True))
+        return 1
     except (SafetyError, OSError, ValueError, KeyError, TypeError, RecursionError) as e:
         print(json.dumps({"status": "ERROR", "error": str(e),
                           "recovery": "Inspect existing records and payloads before retrying any interrupted mutation."}))
@@ -2850,4 +3369,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    sys.modules["homestead"] = sys.modules[__name__]
     raise SystemExit(main())

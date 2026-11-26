@@ -9,21 +9,21 @@ Everything stays in `MEMORY/RUNTIME/`: `queue.json`, `state.json`, `budget.json`
 ## Commands
 
 ```text
-python TOOLS/vhd.py runtime status
-python TOOLS/vhd.py runtime add --kind links
-python TOOLS/vhd.py runtime start
-python TOOLS/vhd.py runtime run --limit 2
-python TOOLS/vhd.py runtime pause
-python TOOLS/vhd.py runtime resume
-python TOOLS/vhd.py runtime stop
-python TOOLS/vhd.py runtime stop --now
+python TOOLS/homestead.py runtime status
+python TOOLS/homestead.py runtime add --kind links
+python TOOLS/homestead.py runtime start
+python TOOLS/homestead.py runtime run --limit 2
+python TOOLS/homestead.py runtime pause
+python TOOLS/homestead.py runtime resume
+python TOOLS/homestead.py runtime stop
+python TOOLS/homestead.py runtime stop --now
 ```
 
 `status` is read-only. `add` deduplicates on kind and payload into a stable ID. `start` clears a previous `STOP` flag only because the user asked for it. `run` processes pending and due retry tasks within `max_tasks_per_run`, records a heartbeat after each task and stops early when the budget is exhausted. `stop --now` also writes the `STOP` flag, which blocks every later run until `start` is used again.
 
 ## Task kinds
 
-Deterministic kinds are `doctor`, `links`, `routes`, `audit` and `release`. An `inference` task is accepted into the queue and blocked, because no provider adapter is configured: no request is made and no cost is incurred. Adding an adapter is a separate authorized change with its own setup and budget review.
+Deterministic kinds are `doctor`, `links`, `routes`, `audit` and `release`. An `inference` task is accepted into the queue and remains blocked. Use [provider routing](PROVIDERS.md) separately to approve the exact file and destinations for a manual request.
 
 ## Limits
 

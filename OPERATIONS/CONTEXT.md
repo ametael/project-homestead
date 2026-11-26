@@ -16,9 +16,13 @@ Stop at the level that answers the request. A named file, owner or project is an
 
 ## Choose the subset from the request
 
-The request decides which sources are needed. A code task narrows to development rules and the affected source; a memory capture narrows to memory rules and one note; a release question narrows to verification and the package documents. An explicit path, owner or scope wins over any automatic choice, and an explicit instruction not to narrow wins too. Do not infer a task from a single keyword when the sentence already states one.
+The request decides which sources are needed. Name the kind of task first: reading, a question, a diagnosis, a build, a review, a retrieval, a record, or a release. The kind selects the subset; a single keyword does not. A code task narrows to development rules and the affected source; a memory capture narrows to memory rules and one note; a release question narrows to verification and the package documents. An explicit path, owner or scope wins over any automatic choice, and an explicit instruction not to narrow wins too. Do not infer a task from a single keyword when the sentence already states one.
 
-Use `python TOOLS/vhd.py search QUERY` for a keyword lookup, then open the two or three hits that matter. A hit gives a path, a line and a freshness state. `throttled`, `busy`, `error` or `unindexed` means the list may not match the current files, so read the file before relying on it. Adaptive ranking is off; order comes from matched words, then occurrences, then path.
+Use `python TOOLS/homestead.py lookup QUERY --scope PATH` when you know the task scope, or use `search` for the home index. For a keyword lookup, then open the two or three hits that matter. A hit gives a path, a line and a freshness state. `throttled`, `busy`, `error` or `unindexed` means the list may not match the current files, so read the file before relying on it. Adaptive ranking is off; order comes from matched words, then occurrences, then path.
+
+## Choose the effort
+
+Use [adaptive reasoning](REASONING.md) for tasks where better references, a prior method or a deterministic check can resolve uncertainty before increasing model effort.
 
 ## Reuse and freshness
 

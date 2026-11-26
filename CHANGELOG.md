@@ -2,6 +2,38 @@
 
 One line per change a user can see. Evidence and counts live in [VERIFICATION.md](VERIFICATION.md). Newest version first.
 
+## 1.0.0
+
+- All personas can use adaptive reasoning, verified methods and scoped checks for token efficiency.
+- Preflight, link checks, lookup and inbox routing can work on the selected files or folder.
+- KnowledgeBank keeps public sources with provenance, an opt-in archive route, a bibliography and a per-URL blocklist.
+- Optional provider routing checks the exact destination through Guardian. The local privacy check returns redacted results.
+- Cashbook exports a user-owned transaction CSV to Excel and can also produce a normalized CSV.
+- The public README explains companion portability, selective context and keeping creative choices with the user.
+- Guardian requires scoped permission for sensitive file content and keeps it out of search previews.
+- Record a verified milestone with `xp-record` and view a derived card with `status --display`.
+- Closeout accepts exact task paths for both review and commit.
+- The package is renamed Project Homestead: the folder, the helper and every user-facing reference use the new name.
+- The user guide and the vision page describe a home for an original character and the assistant that occupies it, opening with a starter character rather than a fixed one.
+- `TOOLS/homestead.py` replaces `TOOLS/vhd.py`. An upgrade reports the old helper and leaves it in place for the owner to recycle.
+- Home detection accepts a folder that still carries the old helper, so an existing home is found without renaming it first.
+- `UPDATE.md` gains the procedure for a home installed under the old folder name.
+- The published test suite moves to `tests/test_homestead.py`.
+
+## 0.9.0
+
+- New `OPERATIONS/SOURCES.md` fixes the access rules: a refusal or a paywall stops the attempt, and no mode, flag or stored file weakens that.
+- A public archive is allowed only when the owner enables it for that fetch, and the result states that the copy is archived.
+- Fetched text is data: invisible characters are stripped, an attempt to steer the reader is reported, and the source URL is marked rather than the whole domain.
+- Source assessment stays neutral about the owner: verdicts are per URL, and the owner's own standards supply the threshold.
+- `OPERATIONS/KNOWLEDGE.md` adds canonical source identity, one entry per URL, and the criteria for choosing between methods.
+- `status` also reports four derived ranks under `cognitive-1` and a project count; ranks award no EXP and grant no permission.
+- `OPERATIONS/LEVELLING.md` records a closeout order: scan, classify, gate, score, handoff, commit.
+- New `closeout scan` and `closeout run` classify pending changes, apply the gates and commit the eligible set in one pass.
+- Generated noise and protected paths stay out of an automatic closeout, and a deletion or a set beyond seven files needs an explicit file list.
+- `OPERATIONS/DEVELOPMENT.md` adds lowest sufficient effort, the conditions for delegation, and the rule that a failed approach changes before it repeats.
+- `OPERATIONS/CONTINUITY.md` and `FILES_AND_GIT.md` record measuring a handoff before editing and checking references before writing.
+
 ## 0.8.1
 
 - The user guide opens with a one-line setup for apps that have a terminal, and a short update procedure.

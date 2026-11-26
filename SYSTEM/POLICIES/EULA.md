@@ -1,6 +1,6 @@
 # Third-party license briefing
 
-Read this only when a task involves third-party material: code, documentation, models, datasets, fonts, images, audio or packages. It is an internal agent briefing, not VHD's distribution license. The distribution license is [LICENSE](../../LICENSE).
+Read this only when a task involves third-party material: code, documentation, models, datasets, fonts, images, audio or packages. It is an internal agent briefing, not Homestead's distribution license. The distribution license is [LICENSE](../../LICENSE).
 
 ## Preference
 
@@ -18,8 +18,8 @@ When false:
 - The supplementary check stops. Advanced customization continues.
 - Warn once per session that disabling the check grants no additional rights.
 - Law, provider terms, host rules and repository policy still apply.
-- Security, authentication, integrity and recovery safeguards stay active.
+- Security, authentication, integrity and recovery safeguards stay active. [Guardian](../../OPERATIONS/GUARDIAN.md) still requires the owner’s decision on sensitive files.
 
 ## Limits
 
-VHD is not a licensing authority and gives no legal advice. No DRM, activation server, telemetry or hidden request enforces any of this. Do not load whole license texts into context; quote the clause that matters and record the source, version and date.
+Homestead is not a licensing authority and gives no legal advice. No DRM, activation server, telemetry or hidden request enforces any of this. Do not load whole license texts into context; quote the clause that matters and record the source, version and date.

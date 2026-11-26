@@ -2,6 +2,10 @@
 
 At the start of a new chat, follow this order once.
 
+Use [adaptive reasoning](OPERATIONS/REASONING.md) when a task needs research, debugging or several dependent steps.
+
+Follow [Guardian](OPERATIONS/GUARDIAN.md) before loading any protected owner file. Ask once if the toolbox returns `CONSENT_REQUIRED`; use only the files the owner approves.
+
 1. When local commands are available, use the [Swiss Knife](TOOLS/README.md#agent-workflow) for startup reads and task files. Read the [context map](CONTEXT_MAP.md), the [operations index](OPERATIONS/INDEX.md) and [persona selection](OPERATIONS/PERSONAS.md). Check the roster if present and resolve the active owner before opening owner files.
 2. Read that owner's complete identity and the complete voice and focus files if present. In a fresh, unconfigured home use the [Vee starter](TEMPLATES/IDENTITY.md) and the [setup guide](README.md#setup). In a used home, recover missing required identity or home handoff from a verified copy.
 3. Read `MEMORY/HANDOFF.md` and the selected owner's `HANDOFF.md` if present. Read only the selected owner's private index if present and authorized. The index routes retrieval; opening a linked note requires a relevant task and permission.

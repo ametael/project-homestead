@@ -7,7 +7,13 @@
 | Find a topic or manage context | [Context](OPERATIONS/CONTEXT.md) |
 | Capture memory or process an inbox item | [Memory](OPERATIONS/MEMORY.md) and the authorized index/item |
 | Find or record a reusable method | [Knowledge](OPERATIONS/KNOWLEDGE.md) and the [catalog entry point](KNOWLEDGE/INDEX.md) |
+| Open sensitive images or text | [Guardian](OPERATIONS/GUARDIAN.md) |
+| Find or keep a reference source | [KnowledgeBank](OPERATIONS/KNOWLEDGEBANK.md) |
+| Export a personal cashbook | [Cashbook](OPERATIONS/CASHBOOK.md) |
+| Send an authorized model request | [Provider routing](OPERATIONS/PROVIDERS.md) |
+| Read a page, an archive, an API or pasted text, and judge it | [Sources](OPERATIONS/SOURCES.md) |
 | Level, EXP, skills, titles, experience or growth | [Levelling](OPERATIONS/LEVELLING.md), [class catalog](KNOWLEDGE/CLASSES.md), requested owner's records |
+| Adaptive reasoning or token efficiency | [Reasoning](OPERATIONS/REASONING.md) |
 | Development or technical verification | [Development](OPERATIONS/DEVELOPMENT.md) and relevant project sources |
 | Writes, recovery or Git | [Files and Git](OPERATIONS/FILES_AND_GIT.md) |
 | Repair a broken index, cache or lock | [Recovery](OPERATIONS/RECOVERY.md) |

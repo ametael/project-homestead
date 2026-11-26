@@ -3,7 +3,7 @@ A quick start for your AI partner
 
 SHORT VERSION
 
-1. Extract VHD into a folder you keep. That folder is the workspace.
+1. Extract Homestead into a folder you keep. That folder is the workspace.
 2. In your agent app, open that folder as the working folder.
 3. Point the agent's system prompt at sysprompt_to_copy.txt from the
    same folder, or send this as the first message:
@@ -16,10 +16,10 @@ task, EXP and updates.
 
 1. Open your home
 
-Extract VHD to a normal folder. Keep a clean copy for sharing. Use the
+Extract Homestead to a normal folder. Keep a clean copy for sharing. Use the
 working copy for your persona, memory and projects.
 
-In your agent app, select the extracted VHD folder as the workspace.
+In your agent app, select the extracted Homestead folder as the workspace.
 Paste sysprompt_to_copy.txt if the app has a system prompt field, or send
 this as your first message:
 
@@ -27,9 +27,9 @@ this as your first message:
 
 Vee is the starter name. You can choose your own name, voice and focus.
 On Windows with Python 3.13+, the optional helper can create the starter
-files. Open a terminal in VHD and run:
+files. Open a terminal in Homestead and run:
 
-  python TOOLS/vhd.py init
+  python TOOLS/homestead.py init
 
 The agent can also follow the manual setup in README.md. If the app
 cannot read local folders, supply the startup files yourself. Save any
@@ -39,7 +39,7 @@ proposed changes back into your working copy.
 
 Open Work in the left sidebar and select an Agent. Choose a model that
 supports your Agent's tools. Set the working directory to the extracted
-VHD folder. For a dedicated Agent, name it Vee and paste
+Homestead folder. For a dedicated Agent, name it Vee and paste
 sysprompt_to_copy.txt as its system prompt. Send the first message above.
 
 With Python 3.13+ and terminal access, Vee calls Swiss Knife itself for
@@ -86,12 +86,12 @@ adds 0 EXP. If new evidence justifies a higher award, only the
 difference is added. Titles and levels grant no extra permissions.
 Try asking, "Vee, what is your level, EXP and best title?"
 
-When sharing, distribute only a clean copy of VHD. Keep your used home
+When sharing, distribute only a clean copy of Homestead. Keep your used home
 and its private files for yourself.
 
 To bring a newer package into a home you already use, hand the zip to
 the agent and say "update this home". It reads UPDATE.md, compares the
 package with your home, and shows what would change before writing.
 Your identity, memory and projects are never touched. Run
-`python TOOLS/vhd.py links` and `python TOOLS/vhd.py routes` afterwards,
+`python TOOLS/homestead.py links` and `python TOOLS/homestead.py routes` afterwards,
 and start a new command if the tool itself was replaced.

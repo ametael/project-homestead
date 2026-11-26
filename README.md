@@ -49,7 +49,7 @@ That is the whole installation. The package ships the Vee starter persona and an
 
 ### Updating an existing home
 
-Ask the agent to read [UPDATE.md](UPDATE.md) and check `https://api.github.com/repos/ametael/project-vhd/releases/latest`. It tells whether the home is older, then runs `python TOOLS/homestead.py upgrade --zip PATH --sha256 PATH.sha256` and shows the plan before anything is written. Identity, memory and projects are not replaced by an update.
+Ask the agent to read [UPDATE.md](UPDATE.md) and check `https://api.github.com/repos/ametael/project-homestead/releases/latest`. It tells whether the home is older, then runs `python TOOLS/homestead.py upgrade --zip PATH --sha256 PATH.sha256` and shows the plan before anything is written. Identity, memory and projects are not replaced by an update.
 
 ### Rename or reshape the assistant
 

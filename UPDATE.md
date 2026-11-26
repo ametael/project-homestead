@@ -33,19 +33,19 @@ A detached digest proves integrity, not who published the archive. A checksum th
 
 ## Check for a newer release
 
-The package makes no network request, so either the user or the agent checks, then brings the archive.
+The upgrade tool reads a local ZIP. The user or agent checks GitHub, then downloads the ZIP and its checksum.
 
 Chat only, no terminal. Send this to the agent:
 
 ```
-Read UPDATE.md from my Homestead home, then check https://api.github.com/repos/ametael/project-vhd/releases/latest and tell me the newest version and whether my home is older.
+Read UPDATE.md from my Homestead home, then check https://api.github.com/repos/ametael/project-homestead/releases/latest and tell me the newest version and whether my home is older.
 ```
 
 The reply carries `tag_name` as the version and an `assets` list with the ZIP and its `.sha256`. Compare that version with `version` in the home's `MANIFEST.json`. A host without network access reports that it cannot check, and the home stays untouched.
 
 With a terminal, in a temporary folder outside the home:
 
-1. `curl -sL https://api.github.com/repos/ametael/project-vhd/releases/latest` to read the version and asset names.
+1. `curl -sL https://api.github.com/repos/ametael/project-homestead/releases/latest` to read the version and asset names.
 2. Download the ZIP and the `.sha256` file beside it.
 3. Apply with `python TOOLS/homestead.py upgrade --zip PATH --sha256 PATH.sha256`, read the plan, then apply with its fingerprint.
 

@@ -1854,7 +1854,7 @@ class GuardianTests(unittest.TestCase):
                                homestead.state_document(homestead.package_manifest(earlier)))
         before = self.file.read_bytes()
         preview = homestead.upgrade_package(self.home, SOURCE)
-        self.assertEqual((preview["home_version"], preview["package_version"]), ("1.0.0", "1.0.0"))
+        self.assertEqual((preview["home_version"], preview["package_version"]), (homestead.VERSION, homestead.VERSION))
         result = homestead.upgrade_package(self.home, SOURCE, write=True, confirm=preview["fingerprint"])
         self.assertIn("OPERATIONS/GUARDIAN.md", result["written"])
         self.assertEqual(self.file.read_bytes(), before)

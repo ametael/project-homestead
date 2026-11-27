@@ -1,4 +1,8 @@
-# Homestead 1.0.0 verification
+# Homestead 1.1.0 verification
+
+The 1.1.0 package adds checks for source-verified search excerpts, conditional reads, and duplicate-log summaries. See the [changelog](CHANGELOG.md).
+
+## Homestead 1.0.0 verification history
 
 Verified on 26 November 2026 on Windows with Python 3.13.14. The original rename baseline used a clean package extraction. Every addition is listed in [CHANGELOG.md](CHANGELOG.md).
 

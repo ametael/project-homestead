@@ -1,6 +1,6 @@
 # Project Homestead
 
-**Project Homestead 1.0.0**
+**Project Homestead 1.1.0**
 
 *Let your companion lighten the load, so you can keep creating in your own way.*
 

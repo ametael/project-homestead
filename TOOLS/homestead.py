@@ -22,7 +22,7 @@ from urllib.parse import unquote
 import uuid
 import zipfile
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LIMIT_FILES = 10000
 LIMIT_BYTES = 512 * 1024 * 1024
 TEXT_LIMIT = 256 * 1024

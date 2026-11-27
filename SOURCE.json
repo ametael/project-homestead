@@ -1,9 +1,9 @@
 {
- "exported_at": "2026-11-27T03:49:48.149810+00:00",
+ "exported_at": "2026-11-27T03:58:25.707644+00:00",
  "extras": [
   {
    "path": "tests/test_homestead.py",
-   "sha256": "0d3cdd45d7b2f862e516a077be348b1f65ca80734a26c50ab7cc12e22e29c421"
+   "sha256": "fb66c9ed36d33912d6a9bf5289f6da01146c0c6b1214d9998c39e3b16add96f1"
   }
  ],
  "files": [
@@ -72,7 +72,7 @@
   "VISION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "e10616c81863ae2d8566d937efb48468fa355c26bdfdfa3daade86b25554b97f",
+ "fingerprint": "310f17970fd3b7ec795ddb84e7bdcd8ca85287767526083ae7d2f91515c2386e",
  "schema": 1,
- "version": "1.0.0"
+ "version": "1.1.0"
 }

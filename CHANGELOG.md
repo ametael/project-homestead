@@ -2,7 +2,7 @@
 
 One line per change a user can see. Evidence and counts live in [VERIFICATION.md](VERIFICATION.md). Newest version first.
 
-## Unreleased
+## 1.1.0
 
 - Verify search excerpts against the current Guardian-approved source, retry stale indexed candidates once, and report each excerpt's source SHA-256.
 - Reuse complete sources in the same chat with conditional reads, group repeated log lines, and support an optional daily persona rhythm.

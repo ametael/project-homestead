@@ -1,5 +1,5 @@
 {
- "exported_at": "2026-11-27T03:43:43.216835+00:00",
+ "exported_at": "2026-11-27T03:49:48.149810+00:00",
  "extras": [
   {
    "path": "tests/test_homestead.py",
@@ -72,7 +72,7 @@
   "VISION.md",
   "sysprompt_to_copy.txt"
  ],
- "fingerprint": "ed71eb7efa6990b1a4fdbfa693fd59690a1702578631c44485db773a1cba528b",
+ "fingerprint": "e10616c81863ae2d8566d937efb48468fa355c26bdfdfa3daade86b25554b97f",
  "schema": 1,
  "version": "1.0.0"
 }

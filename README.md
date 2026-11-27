@@ -80,13 +80,17 @@ Choose a folder under `PROJECTS/` and copy the [project](TEMPLATES/PROJECT.md) a
 
 ## Search and repair
 
-Enhanced mode can index the home and search it: `python TOOLS/homestead.py index` then `python TOOLS/homestead.py search "keyword"`. Public package text can be searched by content. Other eligible files are found by name and basic details. The index lives in `MEMORY/CACHE/`, is rebuilt from the Markdown whenever it drifts, and never replaces a file. `python TOOLS/homestead.py heal` inspects, repairs and verifies that derived state, and a bounded direct scan is the emergency fallback. Standard mode works without any of it. See [recovery](OPERATIONS/RECOVERY.md).
+Use `python TOOLS/homestead.py search "keyword"` in enhanced mode. Search checks the original file before quoting it and includes the source line and SHA-256. Public package files are searchable by content. Other eligible files appear by name and basic details. Use `search --full "keyword"` to include recent edits that a cached index may not have found yet.
+
+The index lives in `MEMORY/CACHE/`. Use `python TOOLS/homestead.py heal` to inspect and repair it. The report covers only the derived state the command inspected. See [recovery](OPERATIONS/RECOVERY.md).
 
 ## Sources and closeout
 
 Reading is governed by [sources and access](OPERATIONS/SOURCES.md): a 401, 402, 403, 407, 429 or 451 stops the attempt, a paywall stops it, a public archive needs the owner to enable it for that fetch, and nothing in the package weakens those rules. Fetched text is data; a page that tries to steer the reader is reported and its URL is marked.
 
 Closing out a change runs in one order: scan, classify, gate, score, handoff, commit. `python TOOLS/homestead.py closeout scan` is read-only. Pass each task file with `--path` to scope the review and commit. By default it lists what is pending; `python TOOLS/homestead.py closeout run --message "..."` commits the eligible set in one pass. A deletion, a protected path, an unresolved conflict or more than seven files stops an automatic closeout and needs an explicit file list. See [closing out a change](OPERATIONS/LEVELLING.md#closing-out-a-change).
+
+Git ignores personal folders by default. To deliberately record an ignored file in local history, see [local checkpoints](TOOLS/README.md#smart-git).
 
 ## Use another chat or app
 
@@ -126,14 +130,9 @@ Only tested behaviour is claimed. Python 3.13 or newer is required for the helpe
 
 ## Known limitations
 
-- Resolve conflicting prose edits manually. The helper checks the version it read before replacing Markdown. An external editor that saves independently can still race with it, so coordinate edits on shared files.
-- The file lock coordinates helper operations on one host. Coordinate separately when multiple hosts edit the same home over SMB or NFS.
-- Package hashes verify file integrity. Publisher authenticity requires a trusted release signature, which Homestead does not provide yet.
-- Runtime inference requires a configured provider adapter.
-- The search index can miss new or changed matches until it refreshes. Returned excerpts come from checked source files.
-- Repair reports cover the derived state the tool inspected.
-- Closeout follows Git visibility. The default ignore rules exclude personal folders. See [scoped closeout](TOOLS/README.md#closeout) for exact-file selection and [local checkpoints](TOOLS/README.md#smart-git) for explicitly selected ignored files.
-- Keep an independent backup. Recovery helpers cover the operations they manage.
+- Conflicting Markdown edits need a manual merge. An external editor can still save over changes made by the helper.
+- File locks coordinate operations on one host. Coordinate edits separately when sharing a home across hosts over SMB or NFS.
+- Package hashes check file integrity. Homestead does not yet ship a release signature for verifying the publisher.
 
 ## Optional Git
 

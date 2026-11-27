@@ -18,7 +18,7 @@ Stop at the level that answers the request. A named file, owner or project is an
 
 The request decides which sources are needed. Name the kind of task first: reading, a question, a diagnosis, a build, a review, a retrieval, a record, or a release. The kind selects the subset; a single keyword does not. A code task narrows to development rules and the affected source; a memory capture narrows to memory rules and one note; a release question narrows to verification and the package documents. An explicit path, owner or scope wins over any automatic choice, and an explicit instruction not to narrow wins too. Do not infer a task from a single keyword when the sentence already states one.
 
-Use `python TOOLS/homestead.py lookup QUERY --scope PATH` when you know the task scope, or use `search` for the home index. For a keyword lookup, then open the two or three hits that matter. A hit gives a path, a line and a freshness state. `throttled`, `busy`, `error` or `unindexed` means the list may not match the current files, so read the file before relying on it. Adaptive ranking is off; order comes from matched words, then occurrences, then path.
+Use `python TOOLS/homestead.py lookup QUERY --scope PATH` when you know the task scope, or use `search` for the home index. For a keyword lookup, then open the two or three hits that matter. A hit gives a path. An excerpt also gives the current source line and SHA-256. If a candidate differs from the index, search tries one refresh and withholds stale excerpts. A throttled or busy index can still miss new matches. Use `search --full` or scoped `lookup` when you need to check for newly added matches. Adaptive ranking is off; order comes from matched words, then occurrences, then path.
 
 ## Choose the effort
 
@@ -27,6 +27,10 @@ Use [adaptive reasoning](REASONING.md) for tasks where better references, a prio
 ## Reuse and freshness
 
 Use one canonical source for each detailed rule or fact. Other files hold short triggers and links. Reuse complete sources already read in the current chat while unchanged. A tool cache, a summary or another chat's receipt is not evidence that this chat read the source.
+
+When an already loaded source may have changed, pass its last SHA-256 to `read PATH --if-changed SHA256`. Use this only when the complete text for that exact path, home and active persona is still available in the same chat. If the tool returns `unchanged: true`, reuse that text. Otherwise finish reading the new version with its SHA-256 and next offset. Read normally after a chat or persona switch, or if any of the earlier text is missing. With native file tools, reuse complete current text and reread the exact source when freshness needs checking.
+
+For repetitive UTF-8 logs, start with [fold-log](../TOOLS/README.md#context-efficiency). Check for omitted groups and clipped text. Open the relevant original lines when diagnosing a distinct error.
 
 Data that was not checked is never described as current. A reused index, a throttled refresh or a fallback scan carries its state in the result, and a claim of freshness needs the check that produced it. See [recovery](RECOVERY.md).
 

@@ -100,6 +100,40 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(self.cli("validate", path, "--kind", "json")[1]["validation"], "PASS")
         self.assertEqual(self.cli("read", "../outside/keep.txt")[0], 1)
 
+    def test_conditional_read_refreshes_only_after_guardian_approval(self):
+        path = "PROJECTS/Alpha/draft.md"
+        approval = self.approve_fixture(path)
+        code, page = self.cli("read", path, *approval)
+        self.assertEqual(code, 0)
+        refresh = ("read", path, "--if-changed", page["sha256"])
+        code, result = self.cli(*refresh, *approval)
+        self.assertEqual((code, result["unchanged"]), (0, True))
+        self.assertNotIn("text", result)
+        self.assertEqual(self.cli(*refresh, "--offset", "1", *approval)[0], 1)
+        self.path.write_text("updated source", encoding="utf-8")
+        code, denied = self.cli(*refresh, *approval)
+        self.assertEqual((code, denied["status"]), (1, "CONSENT_REQUIRED"))
+        code, result = self.cli(*refresh, "--length", "7", *self.approve_fixture(path))
+        self.assertEqual((code, result["unchanged"], result["text"], result["next_offset"]),
+                         (0, False, "updated", 7))
+        code, tail = self.cli("read", path, "--offset", "7", "--sha256",
+                              result["sha256"], *self.approve_fixture(path))
+        self.assertEqual((code, tail["text"], tail["next_offset"]), (0, " source", None))
+
+    def test_fold_log_preserves_distinct_lines_and_declares_preview_limits(self):
+        path = "PROJECTS/Alpha/draft.md"
+        repeated = "é" * 241
+        self.path.write_bytes(f"{repeated}\r\nerror\r\n{repeated}\r\nerror ".encode("utf-8"))
+        code, denied = self.cli("fold-log", path)
+        self.assertEqual((code, denied["status"]), (1, "CONSENT_REQUIRED"))
+        code, report = self.cli("fold-log", path, "--limit", "2", *self.approve_fixture(path))
+        self.assertEqual((code, report["line_count"], report["distinct_lines"],
+                          report["omitted_groups"]), (0, 4, 3, 1))
+        self.assertEqual(report["groups"], [
+            {"text": repeated[:240], "count": 2, "first_line": 1, "last_line": 3, "truncated": True},
+            {"text": "error", "count": 1, "first_line": 2, "last_line": 2, "truncated": False},
+        ])
+
     def test_progression_preview_replay_and_titles_from_markdown(self):
         raw = "PERSONA/PROGRESSION/EXP.md"
         ledger = self.root / raw
@@ -1668,6 +1702,31 @@ class IndexTests(unittest.TestCase):
         top = result["results"][0]
         self.assertEqual((top["path"], top["matched"]), ("README.md", 1))
         self.assertIn("deadlines", top["snippet"]["text"].lower())
+
+    def test_search_refreshes_stale_candidate_and_quotes_current_source(self):
+        homestead.search_command(self.home, "deadlines", scope="README.md")
+        path = self.root / "README.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("deadlines", "milestones"),
+                        encoding="utf-8")
+        homestead.manifest_command(self.root, True)
+        home = homestead.Home(self.root)
+        report = homestead.search_command(home, "deadlines milestones", scope="README.md")
+        self.assertEqual(report["freshness"]["state"], "verified")
+        hit = report["results"][0]
+        self.assertEqual(hit["terms"], ["milestones"])
+        self.assertIn("milestones", hit["snippet"]["text"])
+        self.assertEqual(hit["snippet"]["sha256"], homestead.hash_file(path))
+
+    def test_search_withholds_public_snippet_after_unapproved_edit(self):
+        first = homestead.search_command(self.home, "deadlines", scope="README.md")
+        self.assertIn("snippet", first["results"][0])
+        path = self.root / "README.md"
+        path.write_bytes(path.read_bytes().replace(b"deadlines", b"deadlines hidden"))
+        report = homestead.search_command(self.home, "deadlines", scope="README.md")
+        self.assertEqual(report["freshness"]["state"], "verified")
+        self.assertEqual(report["results"], [])
+        scanned = homestead.search_scan(self.home, ["deadlines"], "README.md")
+        self.assertEqual(scanned, [])
 
     def test_search_throttles_and_respects_scope(self):
         homestead.search_command(self.home, "recovery")

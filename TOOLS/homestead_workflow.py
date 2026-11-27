@@ -7,6 +7,7 @@ import homestead as core
 
 TASKS = {
     "startup": ("read", "routes", "guardian"),
+    "diagnostics": ("fold-log", "read", "inspect"),
     "research": ("knowledge", "guardian", "read"),
     "retrieval": ("lookup", "search", "inspect", "guardian", "read"),
     "documents": ("preflight", "links", "read", "write", "closeout"),
@@ -104,10 +105,6 @@ def lookup(home, scope, query, limit):
     terms = sorted(set(core.tokens_of(query)))
     core.require(terms and 1 <= limit <= 50, "Provide search words and a limit from 1 to 50.")
     matches = core.search_scan(home, terms, prefix)
-    for hit in matches[:limit]:
-        snippet = core.search_snippet(home, hit["path"], terms)
-        if snippet:
-            hit["snippet"] = snippet
     return {"scope": prefix, "matches": len(matches), "results": matches[:limit]}
 
 

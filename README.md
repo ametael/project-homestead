@@ -100,9 +100,11 @@ Before substantial coding, check a failure first. The rules are in [Knowledge an
 
 ## Adaptive reasoning and optional tools
 
-Homestead helps your companion start with light reasoning and use the best method it has evidence for. It loads the context it needs, checks its work, and increases effort when the task calls for it. This supports token efficiency on a compatible host. See [adaptive reasoning](OPERATIONS/REASONING.md).
+Homestead helps your companion start with light reasoning and use the best method it has evidence for. It loads the context it needs, checks its work, and increases effort when the task calls for it. This supports token efficiency on a compatible host. See [adaptive reasoning](OPERATIONS/REASONING.md) and [context refresh and compact logs](TOOLS/README.md#context-efficiency).
 
 Use [KnowledgeBank](OPERATIONS/KNOWLEDGEBANK.md) for searchable references, the [cashbook exporter](OPERATIONS/CASHBOOK.md) to open your transaction log in Excel, and [provider routing](OPERATIONS/PROVIDERS.md) for explicitly approved model requests.
+
+You can also add an [optional daily rhythm](OPERATIONS/PERSONAS.md#optional-daily-rhythm) to Vee or another character’s voice profile.
 
 ## Safety and sharing
 
@@ -124,16 +126,14 @@ Only tested behaviour is claimed. Python 3.13 or newer is required for the helpe
 
 ## Known limitations
 
-- Prose is never merged automatically, and a conflict needs a human choice.
-- A dropped file is never deleted by the tool.
-- Prose, cards and ledgers are Markdown, so a concurrent editor can overwrite a change the helper never saw.
-- A local file lock is not coordination between hosts on SMB or NFS.
-- Package integrity is checked per file; publisher authenticity needs a trusted signature that this version does not provide.
-- Inference tasks in the runtime stay blocked until a provider adapter is configured.
-- The content index is derived. A missing or stale index costs speed, not content, and a direct scan follows the same access rules if it fails.
-- A repair report describes derived state only; it says nothing about files the tool never reads.
-- Closeout sees tracked changes only. The shipped `.gitignore` keeps the user areas untracked, so a personal home closes out package files until the owner tracks its own data or asks for a file directly.
-- Recovery helpers reduce risk for operations that use them. They are not a backup.
+- Resolve conflicting prose edits manually. The helper checks the version it read before replacing Markdown. An external editor that saves independently can still race with it, so coordinate edits on shared files.
+- The file lock coordinates helper operations on one host. Coordinate separately when multiple hosts edit the same home over SMB or NFS.
+- Package hashes verify file integrity. Publisher authenticity requires a trusted release signature, which Homestead does not provide yet.
+- Runtime inference requires a configured provider adapter.
+- The search index can miss new or changed matches until it refreshes. Returned excerpts come from checked source files.
+- Repair reports cover the derived state the tool inspected.
+- Closeout follows Git visibility. The default ignore rules exclude personal folders. See [scoped closeout](TOOLS/README.md#closeout) for exact-file selection and [local checkpoints](TOOLS/README.md#smart-git) for explicitly selected ignored files.
+- Keep an independent backup. Recovery helpers cover the operations they manage.
 
 ## Optional Git
 

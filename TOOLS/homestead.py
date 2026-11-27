@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
+from itertools import islice
 import json
 import ntpath
 import os
@@ -978,8 +979,11 @@ def read_text_source(home, raw):
     return data.decode("utf-8-sig"), digest(data)
 
 
-def read_page(home, raw, offset, length, expected_sha, *, guarded=False, purpose=None):
+def read_page(home, raw, offset, length, expected_sha, *, guarded=False, purpose=None, if_changed=None):
     require(1 <= length <= PAGE_LIMIT, "Page length must be 1 to 4096 characters.")
+    if if_changed is not None:
+        require(offset == 0 and expected_sha is None, "A refresh must start at offset 0 with no --sha256.")
+        require(re.fullmatch(r"[0-9a-fA-F]{64}", if_changed), "Provide a SHA-256 from a complete same-chat read.")
     if guarded:
         data, sha = guardian_bytes(home, raw, purpose, TEXT_LIMIT)
         text = data.decode("utf-8-sig")
@@ -988,9 +992,31 @@ def read_page(home, raw, offset, length, expected_sha, *, guarded=False, purpose
     require(0 <= offset <= len(text), "Offset is outside the source.")
     require(offset == 0 or expected_sha is not None, "A resumed page needs the previous SHA-256.")
     require(expected_sha is None or expected_sha == sha, "Source changed. Start again at offset 0.")
+    result = {"path": clean_relative(raw).as_posix(), "sha256": sha}
+    if if_changed is not None:
+        result["unchanged"] = sha == if_changed.lower()
+        if result["unchanged"]:
+            return result
     end = min(offset + length, len(text))
-    return {"path": clean_relative(raw).as_posix(), "sha256": sha, "offset": offset,
-            "text": text[offset:end], "next_offset": end if end < len(text) else None}
+    return {**result, "offset": offset, "text": text[offset:end],
+            "next_offset": end if end < len(text) else None}
+
+
+def fold_log(home, raw, limit, purpose):
+    require(1 <= limit <= 100, "Limit must be 1 to 100.")
+    data, sha = guardian_bytes(home, raw, purpose, TEXT_LIMIT)
+    lines = data.decode("utf-8-sig").splitlines()
+    groups = {}
+    for number, line in enumerate(lines, 1):
+        if line not in groups:
+            groups[line] = {"count": 0, "first_line": number, "last_line": number}
+        groups[line]["count"] += 1
+        groups[line]["last_line"] = number
+    preview = [{"text": line[:240], "truncated": len(line) > 240, **group}
+               for line, group in islice(groups.items(), limit)]
+    return {"path": clean_relative(raw).as_posix(), "sha256": sha, "source_bytes": len(data),
+            "line_count": len(lines), "distinct_lines": len(groups),
+            "omitted_groups": max(0, len(groups) - limit), "groups": preview}
 
 
 def unique_json_object(pairs):
@@ -2858,8 +2884,16 @@ def index_command(home, full=False):
             "freshness": freshness_report(report.get("state", "error"), document)}
 
 
+def source_snippet(text, sha, terms, width=200):
+    for number, line in enumerate(text.splitlines(), 1):
+        if any(term in line.casefold() for term in terms):
+            return {"line": number, "text": " ".join(line.split())[:width], "sha256": sha}
+    return None
+
+
 def search_matches(home, documents, terms, prefix):
     hits = []
+    stale = False
     for doc in documents:
         if not isinstance(doc, dict) or doc.get("skipped"):
             continue
@@ -2871,23 +2905,39 @@ def search_matches(home, documents, terms, prefix):
         if not any(term in name_terms or term in cached_terms for term in terms):
             continue
         counts = {}
+        snippet = None
         try:
             relative, current = guardian_path(home, path)
+            size = current.stat().st_size
             public_hash = guardian_public_hash(home, relative)
-            if public_hash and doc.get("sha256") == public_hash and hash_file(current) == public_hash:
-                counts = cached_terms
-        except (OSError, SafetyError):
+            if public_hash:
+                if doc.get("sha256") == public_hash:
+                    data, sha = guardian_bytes(home, path, None, TEXT_LIMIT)
+                    if sha == public_hash:
+                        counts = cached_terms
+                        snippet = source_snippet(data.decode("utf-8"), sha, terms)
+                    else:
+                        stale = True
+                elif cached_terms or hash_file(current) == public_hash:
+                    stale = True
+        except GuardianDenied:
+            stale = stale or bool(cached_terms)
+        except (OSError, SafetyError, UnicodeDecodeError):
+            stale = stale or bool(cached_terms)
             continue
         if not counts:
             counts = dict.fromkeys(name_terms, 1)
         matched = [term for term in terms if term in counts]
         if not matched:
             continue
-        hits.append({"path": path, "matched": len(matched), "terms": matched,
-                     "occurrences": sum(int(counts[term]) for term in matched),
-                     "bytes": doc.get("bytes")})
+        hit = {"path": path, "matched": len(matched), "terms": matched,
+               "occurrences": sum(int(counts[term]) for term in matched),
+               "bytes": size}
+        if snippet:
+            hit["snippet"] = snippet
+        hits.append(hit)
     hits.sort(key=lambda hit: (-hit["matched"], -hit["occurrences"], hit["path"]))
-    return hits
+    return hits, stale
 
 
 def search_scan(home, terms, prefix):
@@ -2908,10 +2958,13 @@ def search_scan(home, terms, prefix):
             s = check_node(path)
             _, path = guardian_path(home, text)
             content = path.stem
+            snippet = None
             if s.st_size <= TEXT_LIMIT and guardian_public_hash(home, relative):
                 try:
-                    data, _ = guardian_bytes(home, text, None, TEXT_LIMIT)
-                    content += " " + data.decode("utf-8")
+                    data, sha = guardian_bytes(home, text, None, TEXT_LIMIT)
+                    source = data.decode("utf-8")
+                    content += " " + source
+                    snippet = source_snippet(source, sha, terms)
                 except (GuardianDenied, UnicodeDecodeError):
                     pass
         except (OSError, SafetyError):
@@ -2923,25 +2976,13 @@ def search_scan(home, terms, prefix):
             if token in terms:
                 counts[token] = counts.get(token, 0) + 1
         if counts:
-            hits.append({"path": text, "matched": len(counts), "terms": sorted(counts),
-                         "occurrences": sum(counts.values()), "bytes": s.st_size})
+            hit = {"path": text, "matched": len(counts), "terms": sorted(counts),
+                   "occurrences": sum(counts.values()), "bytes": s.st_size}
+            if snippet:
+                hit["snippet"] = snippet
+            hits.append(hit)
     hits.sort(key=lambda hit: (-hit["matched"], -hit["occurrences"], hit["path"]))
     return hits
-
-
-def search_snippet(home, path_text, terms, width=200):
-    try:
-        path = home.path(path_text, exists=True)
-        if not path.is_file() or path.stat().st_size > TEXT_LIMIT:
-            return None
-        data, _ = guardian_bytes(home, path_text, None, TEXT_LIMIT)
-        for number, line in enumerate(data.decode("utf-8").splitlines(), 1):
-            folded = line.casefold()
-            if any(term in folded for term in terms):
-                return {"line": number, "text": " ".join(line.split())[:width]}
-    except (OSError, SafetyError, UnicodeDecodeError):
-        return None
-    return None
 
 
 def search_command(home, query, limit=10, scope=None, full=False):
@@ -2971,17 +3012,25 @@ def search_command(home, query, limit=10, scope=None, full=False):
         if document is None:
             state = "unindexed" if repaired["state"] == "HEALTHY" else "error"
     if document is not None:
-        hits = search_matches(home, document.get("documents", []), terms, prefix)
-        source = "index"
-    else:
+        hits, stale = search_matches(home, document.get("documents", []), terms, prefix)
+        if stale:
+            try:
+                retry = index_refresh(home, full=True)
+                state = retry["state"]
+                document = retry["index"]
+                if document is not None:
+                    hits, stale = search_matches(home, document.get("documents", []), terms, prefix)
+            except (SafetyError, OSError):
+                state = "error"
+                document = None
+            if stale:
+                warnings.append("Some indexed content changed or could not be verified; stale excerpts were withheld.")
+    if document is None:
         hits = search_scan(home, terms, prefix)
         source = "scan"
-    results = [dict(hit) for hit in hits[:limit]]
-    for hit in results:
-        snippet = search_snippet(home, hit["path"], terms)
-        if snippet:
-            hit["snippet"] = snippet
-    return {"query": query, "terms": terms, "matches": len(hits), "limit": limit, "results": results,
+    else:
+        source = "index"
+    return {"query": query, "terms": terms, "matches": len(hits), "limit": limit, "results": hits[:limit],
             "source": source, "freshness": freshness_report(state, document), "warnings": warnings}
 
 
@@ -3156,7 +3205,12 @@ def main(argv=None):
     read.add_argument("--offset", type=int, default=0)
     read.add_argument("--length", type=int, default=PAGE_LIMIT)
     read.add_argument("--sha256")
+    read.add_argument("--if-changed", metavar="SHA256", help="Skip text already read completely in this chat")
     read.add_argument("--purpose")
+    fold = subs.add_parser("fold-log", help="Group identical lines in an authorized UTF-8 log")
+    fold.add_argument("path")
+    fold.add_argument("--limit", type=int, default=30)
+    fold.add_argument("--purpose")
     guardian = subs.add_parser("guardian", help="Manage scoped permissions for sensitive files")
     actions = guardian.add_subparsers(dest="action", required=True)
     actions.add_parser("status")
@@ -3272,7 +3326,9 @@ def main(argv=None):
                 result = inspect(home, args.path, args.sha256, args.links, purpose=args.purpose, guarded=True)
             elif args.command == "read":
                 result = read_page(home, args.path, args.offset, args.length, args.sha256,
-                                   guarded=True, purpose=args.purpose)
+                                   guarded=True, purpose=args.purpose, if_changed=args.if_changed)
+            elif args.command == "fold-log":
+                result = fold_log(home, args.path, args.limit, args.purpose)
             elif args.command == "guardian":
                 if args.action == "attachment":
                     result = guardian_attachment(home, args.path, args.purpose)
